@@ -1,0 +1,22 @@
+{
+  "agent_id": "agent_te244_local",
+  "agent_name": "TE244 Local Agent",
+  "server_url": "http://127.0.0.1:8089",
+  "auth_token": "change-me-token",
+  "poll_interval_seconds": 2.0,
+  "heartbeat_interval_seconds": 8.0,
+  "download_timeout_seconds": 20.0,
+  "download_max_retries": 4,
+  "work_dir": "./agent_work",
+  "printer_name": "TSC_TE244",
+  "templates": [
+    "label_4x3_pdf_3x4",
+    "label_4x6"
+  ],
+  "groups": [
+    "shipping",
+    "production"
+  ],
+  "max_job_retries": 2
+}
+

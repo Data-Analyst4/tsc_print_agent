@@ -5,6 +5,7 @@ import socket
 import logging
 import tempfile
 import sys
+import os
 
 if len(sys.argv) != 2:
     print("Usage: %s /dev/path/to/printer" % sys.argv[0])
@@ -42,10 +43,15 @@ def accept_one_job(sock):
     pdf_data, _ = consume_up_to(data, UEL)
     pdf_data = pdf_data.lstrip()
 
-    with tempfile.NamedTemporaryFile(suffix=".pdf") as pdffile:
+    with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as pdffile:
         pdffile.write(pdf_data)
         pdffile.flush()
-        tspl = pdf2tspl.pdf2tspl(pdffile.name)
+        temp_pdf = pdffile.name
+    try:
+        tspl = pdf2tspl.pdf2tspl(temp_pdf)
+    finally:
+        if os.path.exists(temp_pdf):
+            os.remove(temp_pdf)
 
     with open(printer, 'wb') as fp:
         fp.write(tspl)

@@ -1,0 +1,21 @@
+{
+  "agent_id": "agent_file_sink",
+  "agent_name": "File Sink Agent",
+  "server_url": "http://127.0.0.1:8089",
+  "auth_token": "change-me-token",
+  "poll_interval_seconds": 1.0,
+  "heartbeat_interval_seconds": 5.0,
+  "download_timeout_seconds": 20.0,
+  "download_max_retries": 3,
+  "work_dir": "./agent_work_file",
+  "printer_name": "file:./agent_work_file/printed_output.tspl",
+  "templates": [
+    "label_4x3_pdf_3x4",
+    "label_4x6"
+  ],
+  "groups": [
+    "test"
+  ],
+  "max_job_retries": 1
+}
+

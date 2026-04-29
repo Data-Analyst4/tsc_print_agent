@@ -1,0 +1,25 @@
+# Python cache
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Environment files
+.env
+.env.*
+
+# Runtime logs
+*.log
+
+# Local runtime state
+print_automation.db
+print_automation.db-shm
+print_automation.db-wal
+agent_work/
+agent_work_file/
+
+# Generated TSPL outputs
+*.tspl
