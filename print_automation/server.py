@@ -9,10 +9,16 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from .config import load_templates
+from .admin_ui import ADMIN_PRINTER_UI_HTML
+from .config import TemplateProfile, load_templates
 from .db import PrintDB
 from .helpers import new_id
-from .routing import agent_matches_job, is_agent_online, pick_agent_for_job
+from .routing import (
+    agent_matches_job,
+    is_agent_online,
+    normalize_size_code,
+    pick_agent_printer_for_job,
+)
 from .states import STATUS_ASSIGNED, STATUS_FAILED, STATUS_QUEUED
 
 LOG = logging.getLogger("print_automation.server")
@@ -38,13 +44,46 @@ class PrintAutomationApp:
     def reload_templates(self) -> None:
         self.templates = load_templates(self.settings.templates_path)
 
+    def build_discovery(self) -> dict[str, Any]:
+        templates = [dataclasses.asdict(p) for p in self.templates.values()]
+        agents = self.db.list_agents()
+        workstations = self.db.list_workstations()
+        fallback_rules = self.db.list_workstation_fallbacks()
+        printer_profiles = self.db.list_agent_printer_profiles()
+
+        agents_by_id = {a["agent_id"]: a for a in agents}
+        active_printers: list[dict[str, Any]] = []
+        for profile in printer_profiles:
+            agent = agents_by_id.get(profile["agent_id"])
+            if not agent:
+                continue
+            online = is_agent_online(agent, max_age_seconds=self.settings.max_agent_staleness_seconds)
+            if not online or not profile.get("enabled", True):
+                continue
+            active_printers.append(
+                {
+                    "agent_id": agent["agent_id"],
+                    "workstation_id": agent.get("workstation_id"),
+                    "printer_name": profile.get("printer_name"),
+                    "size_code": profile.get("size_code"),
+                    "roll_width_mm": profile.get("roll_width_mm"),
+                    "roll_height_mm": profile.get("roll_height_mm"),
+                    "heartbeat_at": agent.get("heartbeat_at"),
+                }
+            )
+
+        return {
+            "templates": templates,
+            "workstations": workstations,
+            "workstation_fallbacks": fallback_rules,
+            "agents": agents,
+            "printer_profiles": printer_profiles,
+            "active_printers": active_printers,
+        }
+
     def submit_job(self, payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
         source_type, source_value = self._parse_source(payload)
-        template_id = str(payload.get("template_id", "")).strip()
-        if template_id not in self.templates:
-            raise ValueError(f"unknown template_id '{template_id}'")
-
-        profile = self.templates[template_id]
+        profile, requested_size_code = self._resolve_template_profile(payload)
         copies = int(payload.get("copies", 1))
         if copies < 1 or copies > 200:
             raise ValueError("copies must be between 1 and 200")
@@ -57,12 +96,20 @@ class PrintAutomationApp:
         target_agent_id = self._coerce_optional_str(target.get("agent_id"))
         target_group = self._coerce_optional_str(target.get("group"))
         target_printer = self._coerce_optional_str(target.get("printer"))
+        requested_workstation_id = self._coerce_optional_str(target.get("workstation_id")) or self._coerce_optional_str(
+            target.get("workstation")
+        )
 
         metadata = payload.get("metadata", {})
         if metadata is None:
             metadata = {}
         if not isinstance(metadata, dict):
             raise ValueError("metadata must be an object")
+        metadata = dict(metadata)
+        if requested_workstation_id:
+            metadata["requested_workstation_id"] = requested_workstation_id
+        if requested_size_code:
+            metadata["requested_size_code"] = requested_size_code
 
         job_id = new_id("job")
         job, created = self.db.create_job(
@@ -84,9 +131,23 @@ class PrintAutomationApp:
         # Attempt immediate assignment for lower queue latency.
         if created and job["status"] == STATUS_QUEUED:
             agents = self.db.list_agents()
-            picked = pick_agent_for_job(job, agents, max_age_seconds=self.settings.max_agent_staleness_seconds)
+            printer_profiles = self.db.list_agent_printer_profiles()
+            fallback_order: list[str] = []
+            if requested_workstation_id:
+                fallback_order = self.db.get_workstation_fallback_order(requested_workstation_id)
+            picked = pick_agent_printer_for_job(
+                job=job,
+                agents=agents,
+                printer_profiles=printer_profiles,
+                fallback_order=fallback_order,
+                max_age_seconds=self.settings.max_agent_staleness_seconds,
+            )
             if picked:
-                self.db.assign_job(job["job_id"], picked["agent_id"])
+                picked_agent_id = picked["agent"]["agent_id"]
+                picked_printer_name = str(picked["printer_profile"].get("printer_name") or "").strip() or None
+                if picked_printer_name and not target_printer:
+                    self.db.set_job_target_printer(job["job_id"], picked_printer_name)
+                self.db.assign_job(job["job_id"], picked_agent_id)
                 job = self.db.get_job(job["job_id"]) or job
 
         return job, created
@@ -96,7 +157,9 @@ class PrintAutomationApp:
         if not agent:
             raise ValueError(f"unknown agent_id '{agent_id}'")
 
-        agents_by_id = {a["agent_id"]: a for a in self.db.list_agents()}
+        all_agents = self.db.list_agents()
+        agents_by_id = {a["agent_id"]: a for a in all_agents}
+        printer_profiles = self.db.list_agent_printer_profiles()
         candidates = self.db.list_candidate_jobs(limit=200)
         for job in candidates:
             status = job["status"]
@@ -124,8 +187,28 @@ class PrintAutomationApp:
             if status != STATUS_QUEUED:
                 continue
 
-            if not agent_matches_job(job, agent):
+            metadata = job.get("metadata") or {}
+            fallback_order: list[str] = []
+            if isinstance(metadata, dict):
+                requested_workstation_id = self._coerce_optional_str(metadata.get("requested_workstation_id"))
+                if requested_workstation_id:
+                    fallback_order = self.db.get_workstation_fallback_order(requested_workstation_id)
+
+            picked = pick_agent_printer_for_job(
+                job=job,
+                agents=all_agents,
+                printer_profiles=printer_profiles,
+                fallback_order=fallback_order,
+                max_age_seconds=self.settings.max_agent_staleness_seconds,
+            )
+            if not picked:
                 continue
+            picked_agent_id = picked["agent"]["agent_id"]
+            if picked_agent_id != agent_id:
+                continue
+            picked_printer_name = str(picked["printer_profile"].get("printer_name") or "").strip() or None
+            if picked_printer_name and not job.get("target_printer"):
+                self.db.set_job_target_printer(job["job_id"], picked_printer_name)
 
             if self.db.assign_job(job["job_id"], agent_id):
                 return self.db.get_job(job["job_id"])
@@ -174,6 +257,33 @@ class PrintAutomationApp:
             raise ValueError(f"unknown job_id '{job_id}'")
         return job
 
+    def _resolve_template_profile(self, payload: dict[str, Any]) -> tuple[TemplateProfile, str | None]:
+        template_id = self._coerce_optional_str(payload.get("template_id"))
+        requested_size_code = normalize_size_code(self._coerce_optional_str(payload.get("label_size")))
+        if not requested_size_code:
+            requested_size_code = normalize_size_code(self._coerce_optional_str(payload.get("size_code")))
+
+        if template_id:
+            if template_id not in self.templates:
+                raise ValueError(f"unknown template_id '{template_id}'")
+            profile = self.templates[template_id]
+            profile_size = normalize_size_code(profile.size_code)
+            if requested_size_code and profile_size and requested_size_code != profile_size:
+                raise ValueError(
+                    f"template '{template_id}' has size_code '{profile_size}' but request asked for '{requested_size_code}'"
+                )
+            return profile, requested_size_code or profile_size
+
+        if not requested_size_code:
+            raise ValueError("template_id or label_size/size_code is required")
+
+        matches = [p for p in self.templates.values() if normalize_size_code(p.size_code) == requested_size_code]
+        if not matches:
+            raise ValueError(f"no template configured for size_code '{requested_size_code}'")
+
+        matches.sort(key=lambda p: (p.version, p.template_id), reverse=True)
+        return matches[0], requested_size_code
+
     @staticmethod
     def _parse_source(payload: dict[str, Any]) -> tuple[str, str]:
         source = payload.get("source")
@@ -213,6 +323,10 @@ class PrintAutomationHandler(BaseHTTPRequestHandler):
         path = parsed.path
         query = parse_qs(parsed.query)
 
+        if path in {"/admin", "/admin/"}:
+            self._write_html(HTTPStatus.OK, ADMIN_PRINTER_UI_HTML)
+            return
+
         if path == "/health":
             self._write_json(HTTPStatus.OK, {"ok": True})
             return
@@ -227,6 +341,33 @@ class PrintAutomationHandler(BaseHTTPRequestHandler):
 
         if path == "/v1/agents":
             self._write_json(HTTPStatus.OK, {"agents": self.server.app.db.list_agents()})
+            return
+
+        if path == "/v1/admin/printer-profiles":
+            agent_id = query.get("agent_id", [None])[0]
+            self._write_json(
+                HTTPStatus.OK,
+                {"printer_profiles": self.server.app.db.list_agent_printer_profiles(agent_id=agent_id)},
+            )
+            return
+
+        if path == "/v1/admin/workstations":
+            self._write_json(
+                HTTPStatus.OK,
+                {"workstations": self.server.app.db.list_workstations()},
+            )
+            return
+
+        if path == "/v1/admin/workstation-fallbacks":
+            workstation_id = query.get("workstation_id", [None])[0]
+            self._write_json(
+                HTTPStatus.OK,
+                {"workstation_fallbacks": self.server.app.db.list_workstation_fallbacks(workstation_id=workstation_id)},
+            )
+            return
+
+        if path == "/v1/discovery":
+            self._write_json(HTTPStatus.OK, self.server.app.build_discovery())
             return
 
         if path == "/v1/jobs":
@@ -278,25 +419,143 @@ class PrintAutomationHandler(BaseHTTPRequestHandler):
                 self._write_json(code, {"job": job, "created": created})
                 return
 
+            if path == "/v1/admin/printer-profiles":
+                agent_id = str(payload.get("agent_id", "")).strip()
+                printer_name = str(payload.get("printer_name", "")).strip()
+                if not agent_id:
+                    raise ValueError("agent_id is required")
+                if not printer_name:
+                    raise ValueError("printer_name is required")
+
+                roll_width_mm = payload.get("roll_width_mm")
+                roll_height_mm = payload.get("roll_height_mm")
+                size_code = payload.get("size_code")
+                notes = payload.get("notes")
+                enabled = payload.get("enabled")
+                profile = self.server.app.db.upsert_agent_printer_profile(
+                    agent_id=agent_id,
+                    printer_name=printer_name,
+                    roll_width_mm=self._coerce_optional_int(roll_width_mm),
+                    roll_height_mm=self._coerce_optional_int(roll_height_mm),
+                    size_code=str(size_code) if size_code is not None else None,
+                    notes=str(notes) if notes is not None else None,
+                    enabled=self._coerce_bool(enabled, default=True),
+                )
+                self._write_json(HTTPStatus.OK, {"printer_profile": profile})
+                return
+
+            if path == "/v1/admin/printer-profiles/delete":
+                agent_id = str(payload.get("agent_id", "")).strip()
+                printer_name = str(payload.get("printer_name", "")).strip()
+                if not agent_id:
+                    raise ValueError("agent_id is required")
+                if not printer_name:
+                    raise ValueError("printer_name is required")
+                deleted = self.server.app.db.delete_agent_printer_profile(agent_id=agent_id, printer_name=printer_name)
+                self._write_json(HTTPStatus.OK, {"deleted": deleted})
+                return
+
+            if path == "/v1/admin/workstations":
+                workstation_id = str(payload.get("workstation_id", "")).strip()
+                if not workstation_id:
+                    raise ValueError("workstation_id is required")
+                name = str(payload.get("name", workstation_id)).strip()
+                location_tag = self.server.app._coerce_optional_str(payload.get("location_tag"))
+                enabled = self._coerce_bool(payload.get("enabled"), default=True)
+                workstation = self.server.app.db.upsert_workstation(
+                    workstation_id=workstation_id,
+                    name=name,
+                    location_tag=location_tag,
+                    enabled=enabled,
+                )
+                self._write_json(HTTPStatus.OK, {"workstation": workstation})
+                return
+
+            if path == "/v1/admin/workstations/delete":
+                workstation_id = str(payload.get("workstation_id", "")).strip()
+                if not workstation_id:
+                    raise ValueError("workstation_id is required")
+                deleted = self.server.app.db.delete_workstation(workstation_id)
+                self._write_json(HTTPStatus.OK, {"deleted": deleted})
+                return
+
+            if path == "/v1/admin/workstation-fallbacks":
+                workstation_id = str(payload.get("workstation_id", "")).strip()
+                if not workstation_id:
+                    raise ValueError("workstation_id is required")
+                fallback_ids = payload.get("fallback_workstation_ids", [])
+                if not isinstance(fallback_ids, list):
+                    raise ValueError("fallback_workstation_ids must be an array")
+                rules = self.server.app.db.set_workstation_fallbacks(
+                    workstation_id=workstation_id,
+                    fallback_workstation_ids=[str(x) for x in fallback_ids],
+                )
+                self._write_json(HTTPStatus.OK, {"workstation_fallbacks": rules})
+                return
+
             if path == "/v1/agents/heartbeat":
                 agent_id = str(payload.get("agent_id", "")).strip()
                 if not agent_id:
                     raise ValueError("agent_id is required")
                 name = str(payload.get("name", agent_id))
+                workstation_id = self.server.app._coerce_optional_str(payload.get("workstation_id")) or agent_id
                 groups = payload.get("groups", [])
                 printers = payload.get("printers", [])
                 templates = payload.get("templates", [])
                 if not isinstance(groups, list) or not isinstance(printers, list) or not isinstance(templates, list):
                     raise ValueError("groups/printers/templates must be arrays")
+
+                printer_names: list[str] = []
+                printer_profiles: list[dict[str, Any]] = []
+                for item in printers:
+                    if isinstance(item, dict):
+                        pname = str(item.get("name", "")).strip()
+                        if not pname:
+                            continue
+                        printer_names.append(pname)
+                        printer_profiles.append(
+                            {
+                                "printer_name": pname,
+                                "roll_width_mm": self._coerce_optional_int(item.get("roll_width_mm")),
+                                "roll_height_mm": self._coerce_optional_int(item.get("roll_height_mm")),
+                                "size_code": str(item.get("size_code", "")).strip().lower() or None,
+                                "notes": str(item.get("notes", "")).strip() or None,
+                                "enabled": self._coerce_bool(item.get("enabled"), default=True),
+                            }
+                        )
+                    else:
+                        pname = str(item).strip()
+                        if pname:
+                            printer_names.append(pname)
+
                 agent = self.server.app.db.upsert_agent(
                     agent_id=agent_id,
                     name=name,
+                    workstation_id=workstation_id,
                     groups=[str(x) for x in groups],
-                    printers=[str(x) for x in printers],
+                    printers=printer_names,
                     templates=[str(x) for x in templates],
                     host=str(payload.get("host", "")) or None,
                     version=str(payload.get("version", "")) or None,
                 )
+                self.server.app.db.upsert_workstation(
+                    workstation_id=workstation_id,
+                    name=str(payload.get("workstation_name", workstation_id)),
+                    location_tag=self.server.app._coerce_optional_str(payload.get("location_tag")),
+                    enabled=True,
+                )
+
+                for p in printer_profiles:
+                    self.server.app.db.upsert_agent_printer_profile(
+                        agent_id=agent_id,
+                        printer_name=p["printer_name"],
+                        roll_width_mm=p["roll_width_mm"],
+                        roll_height_mm=p["roll_height_mm"],
+                        size_code=p["size_code"],
+                        notes=p["notes"],
+                        enabled=bool(p.get("enabled", True)),
+                    )
+
                 self._write_json(HTTPStatus.OK, {"agent": agent})
                 return
 
@@ -361,6 +620,36 @@ class PrintAutomationHandler(BaseHTTPRequestHandler):
         raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
         self.send_response(int(status))
         self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(raw)))
+        self.end_headers()
+        self.wfile.write(raw)
+
+    @staticmethod
+    def _coerce_bool(value: Any, *, default: bool) -> bool:
+        if value is None:
+            return default
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off"}:
+            return False
+        return default
+
+    @staticmethod
+    def _coerce_optional_int(value: Any) -> int | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        return int(text)
+
+    def _write_html(self, status: HTTPStatus, html: str) -> None:
+        raw = html.encode("utf-8")
+        self.send_response(int(status))
+        self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)

@@ -60,6 +60,7 @@ class PrintDB:
                 CREATE TABLE IF NOT EXISTS agents (
                     agent_id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
+                    workstation_id TEXT,
                     groups_json TEXT NOT NULL,
                     printers_json TEXT NOT NULL,
                     templates_json TEXT NOT NULL,
@@ -69,11 +70,54 @@ class PrintDB:
                     status TEXT NOT NULL
                 );
 
+                CREATE TABLE IF NOT EXISTS workstations (
+                    workstation_id TEXT PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    location_tag TEXT,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS workstation_fallbacks (
+                    workstation_id TEXT NOT NULL,
+                    fallback_workstation_id TEXT NOT NULL,
+                    rank INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(workstation_id,fallback_workstation_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS agent_printer_profiles (
+                    agent_id TEXT NOT NULL,
+                    printer_name TEXT NOT NULL,
+                    roll_width_mm INTEGER,
+                    roll_height_mm INTEGER,
+                    size_code TEXT,
+                    notes TEXT,
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY(agent_id, printer_name)
+                );
+
                 CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs(status, created_at);
                 CREATE INDEX IF NOT EXISTS idx_events_job_id ON job_events(job_id);
+                CREATE INDEX IF NOT EXISTS idx_printer_profiles_agent_id ON agent_printer_profiles(agent_id);
+                CREATE INDEX IF NOT EXISTS idx_agents_workstation_id ON agents(workstation_id);
+                CREATE INDEX IF NOT EXISTS idx_fallbacks_ws_rank ON workstation_fallbacks(workstation_id, rank);
                 """
             )
+            self._ensure_schema_evolution()
             self._conn.commit()
+
+    def _ensure_schema_evolution(self) -> None:
+        self._add_column_if_missing("agents", "workstation_id", "TEXT")
+        self._add_column_if_missing("agent_printer_profiles", "enabled", "INTEGER NOT NULL DEFAULT 1")
+
+    def _add_column_if_missing(self, table: str, column: str, spec: str) -> None:
+        rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        columns = {row["name"] for row in rows}
+        if column in columns:
+            return
+        self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {spec}")
 
     def close(self) -> None:
         with self._lock:
@@ -199,6 +243,7 @@ class PrintDB:
         *,
         agent_id: str,
         name: str,
+        workstation_id: str | None,
         groups: list[str],
         printers: list[str],
         templates: list[str],
@@ -210,10 +255,11 @@ class PrintDB:
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO agents(agent_id,name,groups_json,printers_json,templates_json,host,version,heartbeat_at,status)
-                VALUES(?,?,?,?,?,?,?,?,?)
+                INSERT INTO agents(agent_id,name,workstation_id,groups_json,printers_json,templates_json,host,version,heartbeat_at,status)
+                VALUES(?,?,?,?,?,?,?,?,?,?)
                 ON CONFLICT(agent_id) DO UPDATE SET
                     name=excluded.name,
+                    workstation_id=excluded.workstation_id,
                     groups_json=excluded.groups_json,
                     printers_json=excluded.printers_json,
                     templates_json=excluded.templates_json,
@@ -225,6 +271,7 @@ class PrintDB:
                 (
                     agent_id,
                     name,
+                    workstation_id,
                     to_json(groups),
                     to_json(printers),
                     to_json(templates),
@@ -249,6 +296,192 @@ class PrintDB:
         with self._lock:
             rows = self._conn.execute("SELECT * FROM agents ORDER BY heartbeat_at DESC").fetchall()
         return [self._agent_row_to_dict(row) for row in rows]
+
+    def upsert_workstation(
+        self,
+        *,
+        workstation_id: str,
+        name: str,
+        location_tag: str | None = None,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        now = utc_now_iso()
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO workstations(workstation_id,name,location_tag,enabled,updated_at)
+                VALUES(?,?,?,?,?)
+                ON CONFLICT(workstation_id) DO UPDATE SET
+                    name=excluded.name,
+                    location_tag=excluded.location_tag,
+                    enabled=excluded.enabled,
+                    updated_at=excluded.updated_at
+                """,
+                (workstation_id, name, location_tag, 1 if enabled else 0, now),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                """
+                SELECT workstation_id,name,location_tag,enabled,updated_at
+                FROM workstations
+                WHERE workstation_id=?
+                """,
+                (workstation_id,),
+            ).fetchone()
+        return self._workstation_row_to_dict(row)
+
+    def list_workstations(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._conn.execute(
+                """
+                SELECT workstation_id,name,location_tag,enabled,updated_at
+                FROM workstations
+                ORDER BY workstation_id ASC
+                """
+            ).fetchall()
+        return [self._workstation_row_to_dict(row) for row in rows]
+
+    def delete_workstation(self, workstation_id: str) -> bool:
+        with self._lock:
+            self._conn.execute(
+                "DELETE FROM workstation_fallbacks WHERE workstation_id=? OR fallback_workstation_id=?",
+                (workstation_id, workstation_id),
+            )
+            cur = self._conn.execute("DELETE FROM workstations WHERE workstation_id=?", (workstation_id,))
+            self._conn.commit()
+        return cur.rowcount > 0
+
+    def set_workstation_fallbacks(self, *, workstation_id: str, fallback_workstation_ids: list[str]) -> list[dict[str, Any]]:
+        now = utc_now_iso()
+        clean_ids: list[str] = []
+        seen: set[str] = set()
+        for wid in fallback_workstation_ids:
+            normalized = wid.strip()
+            if not normalized or normalized == workstation_id or normalized in seen:
+                continue
+            seen.add(normalized)
+            clean_ids.append(normalized)
+
+        with self._lock:
+            self._conn.execute("DELETE FROM workstation_fallbacks WHERE workstation_id=?", (workstation_id,))
+            for idx, fallback_id in enumerate(clean_ids, start=1):
+                self._conn.execute(
+                    """
+                    INSERT INTO workstation_fallbacks(workstation_id,fallback_workstation_id,rank,updated_at)
+                    VALUES(?,?,?,?)
+                    """,
+                    (workstation_id, fallback_id, idx, now),
+                )
+            self._conn.commit()
+
+        return self.list_workstation_fallbacks(workstation_id=workstation_id)
+
+    def list_workstation_fallbacks(self, *, workstation_id: str | None = None) -> list[dict[str, Any]]:
+        with self._lock:
+            if workstation_id:
+                rows = self._conn.execute(
+                    """
+                    SELECT workstation_id,fallback_workstation_id,rank,updated_at
+                    FROM workstation_fallbacks
+                    WHERE workstation_id=?
+                    ORDER BY rank ASC
+                    """,
+                    (workstation_id,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT workstation_id,fallback_workstation_id,rank,updated_at
+                    FROM workstation_fallbacks
+                    ORDER BY workstation_id ASC, rank ASC
+                    """
+                ).fetchall()
+        return [self._workstation_fallback_row_to_dict(row) for row in rows]
+
+    def get_workstation_fallback_order(self, workstation_id: str) -> list[str]:
+        rows = self.list_workstation_fallbacks(workstation_id=workstation_id)
+        return [row["fallback_workstation_id"] for row in rows]
+
+    def upsert_agent_printer_profile(
+        self,
+        *,
+        agent_id: str,
+        printer_name: str,
+        roll_width_mm: int | None = None,
+        roll_height_mm: int | None = None,
+        size_code: str | None = None,
+        notes: str | None = None,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        now = utc_now_iso()
+        normalized_size = (size_code or "").strip().lower() or None
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO agent_printer_profiles(
+                    agent_id,printer_name,roll_width_mm,roll_height_mm,size_code,notes,enabled,updated_at
+                )
+                VALUES(?,?,?,?,?,?,?,?)
+                ON CONFLICT(agent_id,printer_name) DO UPDATE SET
+                    roll_width_mm=excluded.roll_width_mm,
+                    roll_height_mm=excluded.roll_height_mm,
+                    size_code=excluded.size_code,
+                    notes=excluded.notes,
+                    enabled=excluded.enabled,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    agent_id,
+                    printer_name,
+                    roll_width_mm,
+                    roll_height_mm,
+                    normalized_size,
+                    notes,
+                    1 if enabled else 0,
+                    now,
+                ),
+            )
+            self._conn.commit()
+            row = self._conn.execute(
+                """
+                SELECT agent_id,printer_name,roll_width_mm,roll_height_mm,size_code,notes,enabled,updated_at
+                FROM agent_printer_profiles
+                WHERE agent_id=? AND printer_name=?
+                """,
+                (agent_id, printer_name),
+            ).fetchone()
+        return self._agent_printer_profile_row_to_dict(row)
+
+    def list_agent_printer_profiles(self, *, agent_id: str | None = None) -> list[dict[str, Any]]:
+        with self._lock:
+            if agent_id:
+                rows = self._conn.execute(
+                    """
+                    SELECT agent_id,printer_name,roll_width_mm,roll_height_mm,size_code,notes,enabled,updated_at
+                    FROM agent_printer_profiles
+                    WHERE agent_id=?
+                    ORDER BY printer_name ASC
+                    """,
+                    (agent_id,),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """
+                    SELECT agent_id,printer_name,roll_width_mm,roll_height_mm,size_code,notes,enabled,updated_at
+                    FROM agent_printer_profiles
+                    ORDER BY agent_id ASC, printer_name ASC
+                    """
+                ).fetchall()
+        return [self._agent_printer_profile_row_to_dict(row) for row in rows]
+
+    def delete_agent_printer_profile(self, *, agent_id: str, printer_name: str) -> bool:
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM agent_printer_profiles WHERE agent_id=? AND printer_name=?",
+                (agent_id, printer_name),
+            )
+            self._conn.commit()
+        return cur.rowcount > 0
 
     def list_candidate_jobs(self, limit: int = 100) -> list[dict[str, Any]]:
         with self._lock:
@@ -450,6 +683,19 @@ class PrintDB:
             )
             self._conn.commit()
 
+    def set_job_target_printer(self, job_id: str, printer_name: str | None) -> None:
+        now = utc_now_iso()
+        with self._lock:
+            self._conn.execute(
+                """
+                UPDATE jobs
+                SET target_printer=?,updated_at=?
+                WHERE job_id=?
+                """,
+                (printer_name, now, job_id),
+            )
+            self._conn.commit()
+
     def _job_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
         return {
             "job_id": row["job_id"],
@@ -479,6 +725,7 @@ class PrintDB:
         return {
             "agent_id": row["agent_id"],
             "name": row["name"],
+            "workstation_id": row["workstation_id"],
             "groups": from_json(row["groups_json"], []),
             "printers": from_json(row["printers_json"], []),
             "templates": from_json(row["templates_json"], []),
@@ -486,4 +733,34 @@ class PrintDB:
             "version": row["version"],
             "heartbeat_at": row["heartbeat_at"],
             "status": row["status"],
+        }
+
+    def _workstation_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "workstation_id": row["workstation_id"],
+            "name": row["name"],
+            "location_tag": row["location_tag"],
+            "enabled": bool(row["enabled"]),
+            "updated_at": row["updated_at"],
+        }
+
+    def _workstation_fallback_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        return {
+            "workstation_id": row["workstation_id"],
+            "fallback_workstation_id": row["fallback_workstation_id"],
+            "rank": row["rank"],
+            "updated_at": row["updated_at"],
+        }
+
+    def _agent_printer_profile_row_to_dict(self, row: sqlite3.Row) -> dict[str, Any]:
+        enabled_raw = row["enabled"]
+        return {
+            "agent_id": row["agent_id"],
+            "printer_name": row["printer_name"],
+            "roll_width_mm": row["roll_width_mm"],
+            "roll_height_mm": row["roll_height_mm"],
+            "size_code": row["size_code"],
+            "notes": row["notes"],
+            "enabled": bool(1 if enabled_raw is None else enabled_raw),
+            "updated_at": row["updated_at"],
         }

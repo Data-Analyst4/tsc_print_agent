@@ -24,8 +24,10 @@ Turn web print intents into deterministic physical labels:
 - Accept jobs from web app.
 - Store job + events.
 - Track agents via heartbeat.
-- Route queued jobs to matching agents.
+- Route queued jobs to matching agents and printer profiles by size code.
+- Prefer requested workstation, then fallback order.
 - Expose job/agent status.
+- Expose admin UI and discovery APIs.
 
 Default bind: `127.0.0.1:8089`
 
@@ -33,7 +35,7 @@ Default bind: `127.0.0.1:8089`
 
 `scripts/run_agent.py` runs next to the printer:
 
-- Heartbeats capabilities (`templates`, `groups`, `printer`).
+- Heartbeats capabilities (`templates`, `groups`, `workstation_id`, `printers` with roll profile).
 - Claims assigned/compatible jobs.
 - Downloads source PDF with retries.
 - Renders TSPL using template profile.
@@ -59,6 +61,7 @@ Templates are configured in [config/templates.json](config/templates.json):
 - Alignment tuning (`x_offset_dots`, `y_offset_dots`)
 - Sensor/feed settings (`sensor`, `gap_mm`, `gap_offset_mm`)
 - Print behavior (`speed`, `density`, `direction`, `reference`)
+- Optional routing size code (`size_code`, ex: `4x3`, `4x6`)
 
 ### Your 3x4 PDF on 4x3 stock
 
@@ -90,9 +93,10 @@ python .\scripts\run_agent.py --config .\config\agent.local.json --templates .\c
 python .\scripts\submit_job.py `
   --server http://127.0.0.1:8089 `
   --auth-token change-me-token `
-  --template label_4x3_pdf_3x4 `
+  --label-size 4x3 `
   --copies 1 `
   --pdf-path "d:\Factory\MME-26-04-01274.pdf" `
+  --workstation ws_te244_local `
   --group shipping `
   --idempotency-key MME-26-04-01274-1
 ```
@@ -119,6 +123,15 @@ curl -H "X-Auth-Token: change-me-token" "http://127.0.0.1:8089/v1/jobs/<job_id>?
 - `POST /v1/jobs/{job_id}/status`: worker status update.
 - `GET /v1/templates`: list template profiles.
 - `GET /v1/agents`: list agents.
+- `GET /v1/discovery`: templates + workstations + fallback map + active printers.
+- `GET /v1/admin/printer-profiles`: list printer roll profiles.
+- `POST /v1/admin/printer-profiles`: upsert printer roll profile.
+- `POST /v1/admin/printer-profiles/delete`: delete printer profile.
+- `GET /v1/admin/workstations`: list workstations.
+- `POST /v1/admin/workstations`: upsert workstation.
+- `POST /v1/admin/workstations/delete`: delete workstation.
+- `GET /v1/admin/workstation-fallbacks`: list fallback rules.
+- `POST /v1/admin/workstation-fallbacks`: set fallback rules.
 - `GET /health`: health check.
 
 All endpoints except `/health` require header:
@@ -156,3 +169,14 @@ python .\pdf2tspl.py input.pdf output.tspl -x 100 -y 75 -r 90 --x-offset-dots 0 
 
 - AppSocket script is kept for compatibility, but production path should be server+agent for deterministic routing, retries, and observability.
 - Use profile versioning in `templates.json` when tuning offsets or print parameters.
+
+## Admin UI
+
+- Server admin page: `http://<server-host>:8089/admin`
+- Use it to manage printer roll-size profiles and workstation fallback rules.
+
+## Full Setup Guide
+
+Step-by-step deployment and operations documentation:
+
+- [docs/SETUP_AND_OPERATIONS_GUIDE.md](docs/SETUP_AND_OPERATIONS_GUIDE.md)

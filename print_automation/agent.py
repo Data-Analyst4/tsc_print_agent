@@ -42,11 +42,23 @@ class PrintAgent:
             self._process_job(job)
 
     def _heartbeat(self) -> None:
+        printers_payload: list[dict[str, Any]] = []
+        for p in self.config.printers:
+            printers_payload.append(
+                {
+                    "name": p.name,
+                    "roll_width_mm": p.roll_width_mm,
+                    "roll_height_mm": p.roll_height_mm,
+                    "size_code": p.size_code,
+                }
+            )
+
         payload = {
             "agent_id": self.config.agent_id,
             "name": self.config.agent_name,
+            "workstation_id": self.config.workstation_id,
             "groups": self.config.groups,
-            "printers": [self.config.printer_name],
+            "printers": printers_payload if printers_payload else [self.config.printer_name],
             "templates": self.config.templates,
             "host": self._hostname,
             "version": "1.0.0",
@@ -165,4 +177,3 @@ class PrintAgent:
             )
         except ApiClientError as exc:
             LOG.error("failed to report job failure: %s", exc)
-

@@ -4,6 +4,7 @@
       "template_id": "label_4x3_pdf_3x4",
       "version": 1,
       "description": "PDF canvas 75x100 mm rendered on 100x75 mm stock.",
+      "size_code": "4x3",
       "label_width_mm": 100,
       "label_height_mm": 75,
       "dpi": 203.2,
@@ -23,6 +24,7 @@
       "template_id": "label_4x6",
       "version": 1,
       "description": "Standard 100x150 mm shipping label.",
+      "size_code": "4x6",
       "label_width_mm": 100,
       "label_height_mm": 150,
       "dpi": 203.2,
@@ -40,4 +42,3 @@
     }
   ]
 }
-

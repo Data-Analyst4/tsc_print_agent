@@ -1,6 +1,7 @@
 {
   "agent_id": "agent_te244_local",
   "agent_name": "TE244 Local Agent",
+  "workstation_id": "ws_te244_local",
   "server_url": "http://127.0.0.1:8089",
   "auth_token": "change-me-token",
   "poll_interval_seconds": 2.0,
@@ -9,6 +10,15 @@
   "download_max_retries": 4,
   "work_dir": "./agent_work",
   "printer_name": "TSC_TE244",
+  "printers": [
+    {
+      "name": "TSC_TE244",
+      "roll_width_mm": 100,
+      "roll_height_mm": 75,
+      "size_code": "4x3",
+      "is_default": true
+    }
+  ],
   "templates": [
     "label_4x3_pdf_3x4",
     "label_4x6"
@@ -19,4 +29,3 @@
   ],
   "max_job_retries": 2
 }
-

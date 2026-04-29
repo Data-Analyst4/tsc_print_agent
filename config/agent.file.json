@@ -1,6 +1,7 @@
 {
   "agent_id": "agent_file_sink",
   "agent_name": "File Sink Agent",
+  "workstation_id": "ws_file_sink",
   "server_url": "http://127.0.0.1:8089",
   "auth_token": "change-me-token",
   "poll_interval_seconds": 1.0,
@@ -9,6 +10,15 @@
   "download_max_retries": 3,
   "work_dir": "./agent_work_file",
   "printer_name": "file:./agent_work_file/printed_output.tspl",
+  "printers": [
+    {
+      "name": "file:./agent_work_file/printed_output.tspl",
+      "roll_width_mm": 100,
+      "roll_height_mm": 75,
+      "size_code": "4x3",
+      "is_default": true
+    }
+  ],
   "templates": [
     "label_4x3_pdf_3x4",
     "label_4x6"
@@ -18,4 +28,3 @@
   ],
   "max_job_retries": 1
 }
-
