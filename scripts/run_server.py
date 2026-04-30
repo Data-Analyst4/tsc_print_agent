@@ -20,6 +20,12 @@ def main() -> None:
     parser.add_argument("--db", default="./print_automation.db", help="SQLite DB path")
     parser.add_argument("--templates", default="./config/templates.json", help="Template config path")
     parser.add_argument("--auth-token", default="change-me-token", help="Shared API auth token")
+    parser.add_argument(
+        "--routing-mode",
+        choices=["server_managed", "webapp_managed"],
+        default="webapp_managed",
+        help="Routing ownership mode",
+    )
     parser.add_argument("--log-level", default="INFO", help="Logging level")
     args = parser.parse_args()
 
@@ -34,6 +40,7 @@ def main() -> None:
         db_path=Path(args.db).resolve(),
         templates_path=Path(args.templates).resolve(),
         auth_token=args.auth_token,
+        routing_mode=args.routing_mode,
     )
     run_server(settings)
 

@@ -82,11 +82,16 @@ class PrintAgent:
         job_dir.mkdir(parents=True, exist_ok=True)
         local_pdf = job_dir / "source.pdf"
         local_tspl = job_dir / "label.tspl"
+        target_printer = str(job.get("target_printer") or "").strip() or None
+        selected_printer = target_printer or self.config.printer_name
 
         template_id = job["template_id"]
         profile = self.templates.get(template_id)
         if not profile:
             self._fail_job(job_id, f"template '{template_id}' is not installed on agent", retryable=False)
+            return
+        if not self._is_known_printer(selected_printer):
+            self._fail_job(job_id, f"target printer '{selected_printer}' is not configured on this agent", retryable=False)
             return
 
         try:
@@ -119,7 +124,7 @@ class PrintAgent:
                 STATUS_PRINTING,
                 "Sending RAW TSPL to printer",
                 details={
-                    "printer_name": self.config.printer_name,
+                    "printer_name": selected_printer,
                     "copies": job["copies"],
                     "output_pdf_path": str(local_pdf),
                     "output_tspl_path": str(local_tspl),
@@ -129,7 +134,7 @@ class PrintAgent:
             )
 
             print_results = print_raw(
-                printer_name=self.config.printer_name,
+                printer_name=selected_printer,
                 data=tspl_bytes,
                 document_name=job_id,
                 copies=int(job["copies"]),
@@ -177,3 +182,8 @@ class PrintAgent:
             )
         except ApiClientError as exc:
             LOG.error("failed to report job failure: %s", exc)
+
+    def _is_known_printer(self, printer_name: str) -> bool:
+        configured = {self.config.printer_name}
+        configured.update(p.name for p in self.config.printers)
+        return printer_name in configured

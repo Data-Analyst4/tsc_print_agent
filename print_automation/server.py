@@ -18,6 +18,7 @@ from .routing import (
     is_agent_online,
     normalize_size_code,
     pick_agent_printer_for_job,
+    pick_printer_profile_for_agent,
 )
 from .states import STATUS_ASSIGNED, STATUS_FAILED, STATUS_QUEUED
 
@@ -33,11 +34,14 @@ class ServerSettings:
     auth_token: str
     max_agent_staleness_seconds: int = 45
     default_max_job_retries: int = 2
+    routing_mode: str = "server_managed"
 
 
 class PrintAutomationApp:
     def __init__(self, settings: ServerSettings):
         self.settings = settings
+        if self.settings.routing_mode not in {"server_managed", "webapp_managed"}:
+            raise ValueError("routing_mode must be 'server_managed' or 'webapp_managed'")
         self.db = PrintDB(settings.db_path)
         self.templates = load_templates(settings.templates_path)
 
@@ -79,6 +83,7 @@ class PrintAutomationApp:
             "agents": agents,
             "printer_profiles": printer_profiles,
             "active_printers": active_printers,
+            "routing_mode": self.settings.routing_mode,
         }
 
     def submit_job(self, payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -130,25 +135,33 @@ class PrintAutomationApp:
 
         # Attempt immediate assignment for lower queue latency.
         if created and job["status"] == STATUS_QUEUED:
-            agents = self.db.list_agents()
-            printer_profiles = self.db.list_agent_printer_profiles()
-            fallback_order: list[str] = []
-            if requested_workstation_id:
-                fallback_order = self.db.get_workstation_fallback_order(requested_workstation_id)
-            picked = pick_agent_printer_for_job(
-                job=job,
-                agents=agents,
-                printer_profiles=printer_profiles,
-                fallback_order=fallback_order,
-                max_age_seconds=self.settings.max_agent_staleness_seconds,
-            )
-            if picked:
-                picked_agent_id = picked["agent"]["agent_id"]
-                picked_printer_name = str(picked["printer_profile"].get("printer_name") or "").strip() or None
-                if picked_printer_name and not target_printer:
-                    self.db.set_job_target_printer(job["job_id"], picked_printer_name)
-                self.db.assign_job(job["job_id"], picked_agent_id)
-                job = self.db.get_job(job["job_id"]) or job
+            if self.settings.routing_mode == "webapp_managed":
+                job = self._assign_webapp_targeted_job(
+                    job=job,
+                    target_agent_id=target_agent_id,
+                    target_printer=target_printer,
+                    requested_workstation_id=requested_workstation_id,
+                )
+            else:
+                agents = self.db.list_agents()
+                printer_profiles = self.db.list_agent_printer_profiles()
+                fallback_order: list[str] = []
+                if requested_workstation_id:
+                    fallback_order = self.db.get_workstation_fallback_order(requested_workstation_id)
+                picked = pick_agent_printer_for_job(
+                    job=job,
+                    agents=agents,
+                    printer_profiles=printer_profiles,
+                    fallback_order=fallback_order,
+                    max_age_seconds=self.settings.max_agent_staleness_seconds,
+                )
+                if picked:
+                    picked_agent_id = picked["agent"]["agent_id"]
+                    picked_printer_name = str(picked["printer_profile"].get("printer_name") or "").strip() or None
+                    if picked_printer_name and not target_printer:
+                        self.db.set_job_target_printer(job["job_id"], picked_printer_name)
+                    self.db.assign_job(job["job_id"], picked_agent_id)
+                    job = self.db.get_job(job["job_id"]) or job
 
         return job, created
 
@@ -164,6 +177,11 @@ class PrintAutomationApp:
         for job in candidates:
             status = job["status"]
             assigned = job["assigned_agent_id"]
+
+            if self.settings.routing_mode == "webapp_managed":
+                if status == STATUS_ASSIGNED and assigned == agent_id and agent_matches_job(job, agent):
+                    return job
+                continue
 
             if status == STATUS_ASSIGNED:
                 if assigned and assigned != agent_id:
@@ -214,6 +232,55 @@ class PrintAutomationApp:
                 return self.db.get_job(job["job_id"])
 
         return None
+
+    def _assign_webapp_targeted_job(
+        self,
+        *,
+        job: dict[str, Any],
+        target_agent_id: str | None,
+        target_printer: str | None,
+        requested_workstation_id: str | None,
+    ) -> dict[str, Any]:
+        if not target_agent_id:
+            raise ValueError("webapp_managed routing requires target.agent_id")
+        if not target_printer:
+            raise ValueError("webapp_managed routing requires target.printer")
+
+        agent = self.db.get_agent(target_agent_id)
+        if not agent:
+            raise ValueError(f"unknown target agent_id '{target_agent_id}'")
+        if not is_agent_online(agent, max_age_seconds=self.settings.max_agent_staleness_seconds):
+            raise ValueError(f"target agent '{target_agent_id}' is offline or stale")
+
+        if requested_workstation_id:
+            agent_ws = self._coerce_optional_str(agent.get("workstation_id"))
+            if not agent_ws or agent_ws != requested_workstation_id:
+                raise ValueError(
+                    f"target agent '{target_agent_id}' is not in requested workstation '{requested_workstation_id}'"
+                )
+
+        if not agent_matches_job(job, agent):
+            raise ValueError("target agent/printer/group/template constraints are not compatible")
+
+        printer_profile = pick_printer_profile_for_agent(
+            job=job,
+            agent=agent,
+            printer_profiles=self.db.list_agent_printer_profiles(agent_id=target_agent_id),
+        )
+        if not printer_profile:
+            raise ValueError(
+                f"target printer '{target_printer}' is not enabled/compatible for required label size on agent '{target_agent_id}'"
+            )
+
+        picked_printer_name = str(printer_profile.get("printer_name") or "").strip()
+        if picked_printer_name and picked_printer_name != target_printer:
+            raise ValueError(
+                f"target printer mismatch: requested '{target_printer}', resolved '{picked_printer_name}'"
+            )
+
+        if self.db.assign_job(job["job_id"], target_agent_id):
+            return self.db.get_job(job["job_id"]) or job
+        return job
 
     def update_job_status(self, job_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         new_status = str(payload.get("status", "")).strip().upper()
@@ -384,6 +451,9 @@ class PrintAutomationHandler(BaseHTTPRequestHandler):
 
         if path.startswith("/v1/jobs/"):
             parts = [p for p in path.split("/") if p]
+            if len(parts) == 5 and parts[3] == "artifacts" and parts[4] in {"pdf", "tspl"}:
+                self._serve_job_artifact(parts[2], parts[4])
+                return
             if len(parts) == 3:
                 job_id = parts[2]
                 job = self.server.app.db.get_job(job_id)
@@ -653,6 +723,60 @@ class PrintAutomationHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+    def _serve_job_artifact(self, job_id: str, artifact_kind: str) -> None:
+        job = self.server.app.db.get_job(job_id)
+        if not job:
+            self._write_json(HTTPStatus.NOT_FOUND, {"error": "job not found"})
+            return
+
+        artifact_key = "output_pdf_path" if artifact_kind == "pdf" else "output_tspl_path"
+        configured_name = "source.pdf" if artifact_kind == "pdf" else "label.tspl"
+        content_type = "application/pdf" if artifact_kind == "pdf" else "text/plain; charset=utf-8"
+        disposition = "inline" if artifact_kind == "pdf" else "attachment"
+        download_name = f"{job_id}.pdf" if artifact_kind == "pdf" else f"{job_id}.tspl"
+
+        raw_path = self.server.app._coerce_optional_str(job.get(artifact_key))
+        if not raw_path:
+            self._write_json(HTTPStatus.NOT_FOUND, {"error": f"{artifact_kind} artifact not available"})
+            return
+
+        try:
+            artifact_path = Path(raw_path).resolve(strict=True)
+        except FileNotFoundError:
+            self._write_json(HTTPStatus.NOT_FOUND, {"error": f"{artifact_kind} artifact file not found"})
+            return
+        except OSError:
+            self._write_json(HTTPStatus.BAD_REQUEST, {"error": "invalid artifact path"})
+            return
+
+        if not artifact_path.is_file():
+            self._write_json(HTTPStatus.NOT_FOUND, {"error": f"{artifact_kind} artifact file not found"})
+            return
+
+        # Artifacts are expected to be generated under <work_dir>/<job_id>/<source.pdf|label.tspl>.
+        if artifact_path.name.lower() != configured_name:
+            self._write_json(HTTPStatus.BAD_REQUEST, {"error": "unexpected artifact filename"})
+            return
+        if artifact_path.parent.name != job_id:
+            self._write_json(HTTPStatus.BAD_REQUEST, {"error": "artifact path does not match job id"})
+            return
+
+        self._write_file(
+            status=HTTPStatus.OK,
+            content_type=content_type,
+            content_disposition=f'{disposition}; filename="{download_name}"',
+            path=artifact_path,
+        )
+
+    def _write_file(self, *, status: HTTPStatus, content_type: str, content_disposition: str, path: Path) -> None:
+        data = path.read_bytes()
+        self.send_response(int(status))
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(data)))
+        self.send_header("Content-Disposition", content_disposition)
+        self.end_headers()
+        self.wfile.write(data)
 
 
 def run_server(settings: ServerSettings) -> None:
