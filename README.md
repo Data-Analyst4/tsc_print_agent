@@ -1,93 +1,120 @@
-# tsc_print_agent (PDF to TSPL Print Automation)
+# PDF to TSPL Print Automation
 
-This repository now contains two layers:
+A production-oriented service for converting PDF label intents into deterministic TSPL printer output, with centralized queueing, workstation-aware routing, retry handling, and operator visibility.
 
-1. `pdf2tspl.py`: deterministic PDF -> TSPL renderer.
-2. `print_automation/`: production print automation system (server + agent + queue + status).
+This repository contains:
 
-## Core Objective
+1. `pdf2tspl.py`: standalone PDF -> TSPL converter.
+2. `print_automation/`: central server + agent workflow for real operations.
 
-Turn web print intents into deterministic physical labels:
+## Why This Exists
 
-- No browser print dialogs.
-- Template-driven sizing/orientation/offsets.
-- Correct printer routing via online agents.
-- Reliable queue states and retry behavior.
-- Full observability for debugging.
+This app is designed for environments where browser printing is unreliable for label operations.
 
-## Architecture
+It provides:
 
-### 1) Central Server
+- Silent RAW printing from agent workstation.
+- Template-driven rendering (size, rotation, offsets, print parameters).
+- Central queue with status timeline and retries.
+- Routing by workstation + size code + fallback order.
+- Admin UI to view jobs, artifacts, printers, and routing data.
 
-`scripts/run_server.py` runs an HTTP API + SQLite queue:
+## Core Capabilities
 
-- Accept jobs from web app.
-- Store job + events.
-- Track agents via heartbeat.
-- Route queued jobs to matching agents and printer profiles by size code.
-- Prefer requested workstation, then fallback order.
-- Expose job/agent status.
-- Expose admin UI and discovery APIs.
+- Submit print jobs via API (`POST /v1/jobs`).
+- Route jobs to matching online agent/printer.
+- Download source PDF on workstation.
+- Render TSPL and print locally.
+- Persist statuses/events/artifacts in SQLite.
+- View job list, events, PDF artifact, and TSPL artifact in frontend (`/admin`).
+
+## Architecture (Generic)
+
+### Central Server
+
+Responsibilities:
+
+- API endpoints.
+- Job queue and status lifecycle.
+- Agent heartbeat registry.
+- Workstation and fallback rules.
+- Printer profile compatibility checks.
+- Admin UI and discovery APIs.
 
 Default bind: `127.0.0.1:8089`
 
-### 2) Local Agent (per machine/printer)
+### Workstation Agent
 
-`scripts/run_agent.py` runs next to the printer:
+Responsibilities:
 
-- Heartbeats capabilities (`templates`, `groups`, `workstation_id`, `printers` with roll profile).
-- Claims assigned/compatible jobs.
-- Downloads source PDF with retries.
-- Renders TSPL using template profile.
-- Sends RAW bytes silently to local printer.
-- Reports `QUEUED -> ... -> SUCCESS/FAILED`.
+- Heartbeat with printer/template capabilities.
+- Claim assigned/compatible jobs.
+- Download PDF from path or URL.
+- Render TSPL and send RAW to local printer.
+- Report transitions and artifact paths.
+
+### Web App / Integration Client
+
+Responsibilities:
+
+- Submit print intent payloads.
+- Poll/list jobs and events.
+- Optionally fetch PDF/TSPL artifacts.
 
 ## Status Lifecycle
 
+Normal path:
+
 `QUEUED -> ASSIGNED -> DOWNLOADING -> RENDERING -> PRINTING -> SUCCESS`
 
-On failures:
+Failure path:
 
-- Retryable failures (`download`, `print transport`) can be re-queued up to `max_retries`.
-- Non-retryable failures become `FAILED`.
+- Retryable failures requeue up to `max_retries`.
+- Final failures move to `FAILED`.
 
-## Template Profiles
+## Repository Layout
 
-Templates are configured in [config/templates.json](config/templates.json):
+- `scripts/run_server.py`: start central server.
+- `scripts/run_agent.py`: start workstation agent.
+- `scripts/submit_job.py`: CLI to submit test jobs.
+- `print_automation/server.py`: HTTP routes and orchestration.
+- `print_automation/agent.py`: workstation print runtime.
+- `print_automation/db.py`: SQLite schema and persistence.
+- `print_automation/admin_ui.py`: built-in frontend UI.
+- `config/templates.json`: template rendering profiles.
+- `config/agent.local.json`: sample local agent config.
+- `docs/SETUP_AND_OPERATIONS_GUIDE.md`: full deployment runbook.
 
-- Label size (`label_width_mm`, `label_height_mm`)
-- DPI
-- Rotation (`rotate`)
-- Alignment tuning (`x_offset_dots`, `y_offset_dots`)
-- Sensor/feed settings (`sensor`, `gap_mm`, `gap_offset_mm`)
-- Print behavior (`speed`, `density`, `direction`, `reference`)
-- Optional routing size code (`size_code`, ex: `4x3`, `4x6`)
+## Prerequisites
 
-### Your 3x4 PDF on 4x3 stock
-
-Template: `label_4x3_pdf_3x4`
-
-- PDF page: `75 x 100 mm`
-- Stock: `100 x 75 mm`
-- Profile uses `rotate: 90` and `SIZE 100 mm,75 mm`.
+- Python 3.11+
+- OS printer installed and working on each workstation
+- Network connectivity from workstation to server
+- Shared API token for server and agents
 
 ## Quick Start (Local)
 
-### 1) Start server
+### 1) Install
 
 ```powershell
-python .\scripts\run_server.py --auth-token change-me-token
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
 ```
 
-### 2) Start local printer agent
+### 2) Run server
 
-Edit [config/agent.local.json](config/agent.local.json) if needed (printer name, token), then run:
+```powershell
+python .\scripts\run_server.py --auth-token change-me-token --routing-mode server_managed
+```
+
+### 3) Run agent
 
 ```powershell
 python .\scripts\run_agent.py --config .\config\agent.local.json --templates .\config\templates.json
 ```
 
-### 3) Submit a job
+### 4) Submit test job
 
 ```powershell
 python .\scripts\submit_job.py `
@@ -95,88 +122,109 @@ python .\scripts\submit_job.py `
   --auth-token change-me-token `
   --label-size 4x3 `
   --copies 1 `
-  --pdf-path "d:\Factory\MME-26-04-01274.pdf" `
+  --pdf-path "C:\labels\sample.pdf" `
   --workstation ws_te244_local `
   --group shipping `
-  --idempotency-key MME-26-04-01274-1
+  --idempotency-key local-test-001
 ```
 
-### 4) Check status
+### 5) Verify
 
-```powershell
-curl -H "X-Auth-Token: change-me-token" http://127.0.0.1:8089/v1/jobs
-```
+- Admin UI: `http://127.0.0.1:8089/admin`
+- Health: `http://127.0.0.1:8089/health`
 
-For detailed timeline:
+In `Recent Jobs and Artifacts`:
 
-```powershell
-curl -H "X-Auth-Token: change-me-token" "http://127.0.0.1:8089/v1/jobs/<job_id>?include_events=true"
-```
+- See job rows.
+- Open `View PDF` when available.
+- Use `Download TSPL` for generated command stream.
+- Inspect timeline with `View Events`.
+
+## Routing Modes
+
+### `server_managed`
+
+- Server chooses compatible online agent/printer.
+- Can use preferred `workstation_id` and fallback chain.
+
+### `webapp_managed`
+
+- Client must send explicit `target.agent_id` and `target.printer`.
+- Use this when external logic owns routing.
 
 ## API Summary
 
-- `POST /v1/jobs`: submit print intent.
-- `GET /v1/jobs`: list jobs.
-- `GET /v1/jobs/{job_id}`: job detail.
-- `POST /v1/agents/heartbeat`: online agent heartbeat.
-- `POST /v1/agents/{agent_id}/claim-next`: claim next routed job.
-- `POST /v1/jobs/{job_id}/status`: worker status update.
-- `GET /v1/templates`: list template profiles.
-- `GET /v1/agents`: list agents.
-- `GET /v1/discovery`: templates + workstations + fallback map + active printers.
-- `GET /v1/admin/printer-profiles`: list printer roll profiles.
-- `POST /v1/admin/printer-profiles`: upsert printer roll profile.
-- `POST /v1/admin/printer-profiles/delete`: delete printer profile.
-- `GET /v1/admin/workstations`: list workstations.
-- `POST /v1/admin/workstations`: upsert workstation.
-- `POST /v1/admin/workstations/delete`: delete workstation.
-- `GET /v1/admin/workstation-fallbacks`: list fallback rules.
-- `POST /v1/admin/workstation-fallbacks`: set fallback rules.
-- `GET /health`: health check.
-
-All endpoints except `/health` require header:
+All endpoints except `/health` require:
 
 - `X-Auth-Token: <token>`
 
-## Branching and Versioning
+Key endpoints:
 
-This repository uses a release-friendly Git model:
+- `POST /v1/jobs`
+- `GET /v1/jobs`
+- `GET /v1/jobs/{job_id}`
+- `GET /v1/jobs/{job_id}/artifacts/pdf`
+- `GET /v1/jobs/{job_id}/artifacts/tspl`
+- `POST /v1/agents/heartbeat`
+- `POST /v1/agents/{agent_id}/claim-next`
+- `POST /v1/jobs/{job_id}/status`
+- `GET /v1/discovery`
+- `GET /v1/admin/printer-profiles`
+- `POST /v1/admin/printer-profiles`
+- `GET /v1/admin/workstations`
+- `POST /v1/admin/workstations`
+- `GET /v1/admin/workstation-fallbacks`
+- `POST /v1/admin/workstation-fallbacks`
 
-- `main`: stable production-ready code only.
-- `develop`: integration branch for next release.
-- `release/x.y.z`: release hardening branches created from `develop`.
-- `hotfix/x.y.z`: urgent fixes created from `main`.
+## Frontend Coverage
 
-Version tags are created on `main` using Semantic Versioning: `vMAJOR.MINOR.PATCH` (for example `v1.2.0`).
+The built-in frontend at `/admin` currently supports:
 
-### Release flow
+1. Printer profile management.
+2. Workstation management.
+3. Workstation fallback management.
+4. Active printer discovery view.
+5. Recent jobs list with filters and limit.
+6. Job event timeline preview.
+7. PDF artifact open-in-new-tab action.
+8. TSPL artifact download action.
+9. Live refresh toggle.
 
-1. Open feature PRs into `develop`.
-2. Cut `release/x.y.z` from `develop` when freezing a release.
-3. QA and final fixes on `release/x.y.z`.
-4. Merge `release/x.y.z` into `main` and tag `vX.Y.Z`.
-5. Merge `release/x.y.z` back into `develop`.
+## Configuration Tips
 
-## Existing Converter CLI
+- Keep template `size_code` aligned with printer profile `size_code`.
+- Use stable naming for `workstation_id`, `agent_id`, and printers.
+- Set fallback workstations for every critical print path.
+- Keep `work_dir` persistent enough for troubleshooting artifacts.
 
-You can still use direct conversion:
+## Operations and Reliability
 
-```powershell
-python .\pdf2tspl.py input.pdf output.tspl -x 100 -y 75 -r 90 --x-offset-dots 0 --y-offset-dots 0
-```
+Recommended practices:
 
-## Notes
+1. Run server and agents as managed services (auto restart).
+2. Put server behind HTTPS (reverse proxy/tunnel).
+3. Rotate auth token periodically.
+4. Back up `print_automation.db` daily.
+5. Monitor stale heartbeats and failed jobs.
 
-- AppSocket script is kept for compatibility, but production path should be server+agent for deterministic routing, retries, and observability.
-- Use profile versioning in `templates.json` when tuning offsets or print parameters.
+## Common Problems
 
-## Admin UI
-
-- Server admin page: `http://<server-host>:8089/admin`
-- Use it to manage printer roll-size profiles and workstation fallback rules.
+- Jobs stuck `QUEUED`: no compatible online agent/printer for requested size/workstation.
+- Artifact buttons missing: render/print stage never reached, or artifact paths/files unavailable.
+- Download failures (403/404): source URL inaccessible from workstation.
+- Print failures: incorrect printer name or spooler/device issue.
 
 ## Full Setup Guide
 
-Step-by-step deployment and operations documentation:
+Detailed step-by-step deployment, verification, troubleshooting, and go-live checklist:
 
 - [docs/SETUP_AND_OPERATIONS_GUIDE.md](docs/SETUP_AND_OPERATIONS_GUIDE.md)
+
+## Versioning and Branching
+
+- Stable releases should be tagged on `main` using semantic versions (`vMAJOR.MINOR.PATCH`).
+- Day-to-day integration can happen on `develop` via PRs.
+
+## License
+
+MIT License. See `LICENSE`.
