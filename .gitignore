@@ -23,3 +23,8 @@ agent_work_file/
 
 # Generated TSPL outputs
 *.tspl
+
+# Build outputs
+artifacts/
+build/
+dist/

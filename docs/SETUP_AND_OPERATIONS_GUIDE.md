@@ -2,7 +2,7 @@
 
 This guide provides a simple, generic, and detailed method to deploy and run the PDF -> TSPL print automation system.
 
-Release covered by this document: `v1.1.0`.
+Release covered by this document: `v1.1.1`.
 
 It is written for this operating model:
 

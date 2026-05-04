@@ -55,7 +55,8 @@ function Run-PyInstallerBuild {
         [Parameter(Mandatory = $true)][string]$SpecPath,
         [Parameter(Mandatory = $true)][string]$ExeName,
         [Parameter(Mandatory = $true)][string]$EntryScript,
-        [bool]$UseOneFile = $false
+        [bool]$UseOneFile = $false,
+        [string[]]$ExtraArgs = @()
     )
 
     $modeArg = if ($UseOneFile) { "--onefile" } else { "--onedir" }
@@ -68,10 +69,11 @@ function Run-PyInstallerBuild {
         "--distpath", $DistPath,
         "--workpath", $WorkPath,
         "--specpath", $SpecPath,
-        "--hidden-import", "win32timezone",
-        "--collect-submodules", "win32com",
         $EntryScript
     )
+    if ($ExtraArgs.Count -gt 0) {
+        $args = $args[0..($args.Count - 2)] + $ExtraArgs + $args[-1]
+    }
 
     & $PyExe @args
     if ($LASTEXITCODE -ne 0) {
@@ -122,13 +124,25 @@ if ($LASTEXITCODE -ne 0) {
 
 $builds = @()
 if ($Target -in @("all", "server")) {
-    $builds += [pscustomobject]@{ Name = "pdf2tspl-server"; Script = "scripts\run_server.py" }
+    $builds += [pscustomobject]@{
+        Name = "pdf2tspl-server"
+        Script = "scripts\run_server.py"
+        ExtraArgs = @()
+    }
 }
 if ($Target -in @("all", "agent")) {
-    $builds += [pscustomobject]@{ Name = "pdf2tspl-agent"; Script = "scripts\run_agent.py" }
+    $builds += [pscustomobject]@{
+        Name = "pdf2tspl-agent"
+        Script = "scripts\run_agent.py"
+        ExtraArgs = @("--hidden-import", "pywintypes", "--hidden-import", "win32print", "--hidden-import", "win32timezone")
+    }
 }
 if ($Target -in @("all", "submit")) {
-    $builds += [pscustomobject]@{ Name = "pdf2tspl-submit-job"; Script = "scripts\submit_job.py" }
+    $builds += [pscustomobject]@{
+        Name = "pdf2tspl-submit-job"
+        Script = "scripts\submit_job.py"
+        ExtraArgs = @()
+    }
 }
 
 Push-Location $RepoRoot
@@ -144,7 +158,8 @@ try {
             -SpecPath $specDir `
             -ExeName $build.Name `
             -EntryScript $build.Script `
-            -UseOneFile $OneFile.IsPresent
+            -UseOneFile $OneFile.IsPresent `
+            -ExtraArgs $build.ExtraArgs
     }
 
     Copy-Item -LiteralPath (Join-Path $RepoRoot "config") -Destination (Join-Path $OutputDir "config") -Recurse -Force

@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## [1.1.1] - 2026-05-04
+
+### Changed
+
+- Optimized `scripts/build_windows_exe.ps1` to avoid unnecessary `win32com` collection for non-agent builds, reducing build time and artifact bloat.
+- Added build output directories to `.gitignore`:
+  - `artifacts/`
+  - `build/`
+  - `dist/`
+
 ## [1.1.0] - 2026-05-04
 
 ### Added

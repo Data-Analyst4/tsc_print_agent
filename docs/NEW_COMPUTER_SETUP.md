@@ -2,7 +2,7 @@
 
 Use this guide when setting up the project on a fresh Windows PC.
 
-Release covered by this document: `v1.1.0`.
+Release covered by this document: `v1.1.1`.
 
 See also:
 

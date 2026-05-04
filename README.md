@@ -2,7 +2,7 @@
 
 A production-oriented service for converting PDF label intents into deterministic TSPL printer output, with centralized queueing, workstation-aware routing, retry handling, and operator visibility.
 
-Current release: `v1.1.0` (see `VERSION` and `CHANGELOG.md`).
+Current release: `v1.1.1` (see `VERSION` and `CHANGELOG.md`).
 
 This repository contains:
 
