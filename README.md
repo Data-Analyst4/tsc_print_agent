@@ -2,6 +2,8 @@
 
 A production-oriented service for converting PDF label intents into deterministic TSPL printer output, with centralized queueing, workstation-aware routing, retry handling, and operator visibility.
 
+Current release: `v1.1.0` (see `VERSION` and `CHANGELOG.md`).
+
 This repository contains:
 
 1. `pdf2tspl.py`: standalone PDF -> TSPL converter.
@@ -85,6 +87,14 @@ Failure path:
 - `config/agent.local.json`: sample local agent config.
 - `docs/SETUP_AND_OPERATIONS_GUIDE.md`: full deployment runbook.
 
+## Documentation Hub
+
+- [docs/DOCUMENTATION_INDEX.md](docs/DOCUMENTATION_INDEX.md)
+- [docs/SETUP_AND_OPERATIONS_GUIDE.md](docs/SETUP_AND_OPERATIONS_GUIDE.md)
+- [docs/NEW_COMPUTER_SETUP.md](docs/NEW_COMPUTER_SETUP.md)
+- [docs/WINDOWS_EXE_PACKAGING.md](docs/WINDOWS_EXE_PACKAGING.md)
+- [CHANGELOG.md](CHANGELOG.md)
+
 ## Prerequisites
 
 - Python 3.11+
@@ -139,6 +149,59 @@ In `Recent Jobs and Artifacts`:
 - Open `View PDF` when available.
 - Use `Download TSPL` for generated command stream.
 - Inspect timeline with `View Events`.
+
+## One-Command Windows Setup (Installer Script)
+
+For new PCs, you can run a single setup file that:
+
+- Copies project files to install directory.
+- Installs Python 3.11 if missing.
+- Creates `.venv` and installs `requirements.txt`.
+- Prepares agent config.
+- Installs Windows services for auto-start (server/agent).
+
+Run in Admin PowerShell from repo root:
+
+```powershell
+.\setup_windows.ps1 -Mode both -InstallDir "C:\Pdf2Tspl" -AuthToken "change-me-token"
+```
+
+Server-only machine:
+
+```powershell
+.\setup_windows.ps1 -Mode server -InstallDir "C:\Pdf2Tspl" -AuthToken "change-me-token"
+```
+
+Agent-only machine:
+
+```powershell
+.\setup_windows.ps1 `
+  -Mode agent `
+  -InstallDir "C:\Pdf2Tspl" `
+  -ServerUrl "http://192.168.1.20:8089" `
+  -AuthToken "change-me-token" `
+  -PrinterName "TSC_TE244"
+```
+
+Optional launcher:
+
+```cmd
+setup_windows.bat -Mode both -InstallDir C:\Pdf2Tspl -AuthToken change-me-token
+```
+
+### Build EXE / Installer
+
+Build portable app EXEs:
+
+```powershell
+.\scripts\build_windows_exe.ps1 -Target all
+```
+
+Build installer EXE:
+
+```powershell
+.\scripts\build_windows_installer.ps1 -Mode both -AuthToken "change-me-token"
+```
 
 ## Routing Modes
 
@@ -207,6 +270,79 @@ Recommended practices:
 4. Back up `print_automation.db` daily.
 5. Monitor stale heartbeats and failed jobs.
 
+### Windows Auto-Start on Boot/Restart
+
+Use one of these production patterns:
+
+- Option A (`Task Scheduler`): easier if printers are available only in a logged-in user profile.
+- Option B (`Windows Service + NSSM`): best match for headless always-on middleware behavior.
+
+Run all install/uninstall commands in an elevated PowerShell window.
+
+#### Option A: Task Scheduler (existing)
+
+Server:
+
+```powershell
+.\scripts\install_windows_autostart.ps1 `
+  -Mode server `
+  -Host 0.0.0.0 `
+  -Port 8089 `
+  -AuthToken "change-me-token" `
+  -RoutingMode server_managed `
+  -RunAs system
+```
+
+Agent:
+
+```powershell
+.\scripts\install_windows_autostart.ps1 `
+  -Mode agent `
+  -AgentConfigPath ".\config\agent.local.json" `
+  -RunAs system
+```
+
+Remove tasks:
+
+```powershell
+.\scripts\uninstall_windows_autostart.ps1 -Mode server
+.\scripts\uninstall_windows_autostart.ps1 -Mode agent
+```
+
+#### Option B: Windows Service (NSSM, Rynan-style)
+
+Server:
+
+```powershell
+.\scripts\install_windows_service.ps1 `
+  -Mode server `
+  -Host 0.0.0.0 `
+  -Port 8089 `
+  -AuthToken "change-me-token" `
+  -RoutingMode server_managed
+```
+
+Agent:
+
+```powershell
+.\scripts\install_windows_service.ps1 `
+  -Mode agent `
+  -AgentConfigPath ".\config\agent.local.json"
+```
+
+Remove services:
+
+```powershell
+.\scripts\uninstall_windows_service.ps1 -Mode server
+.\scripts\uninstall_windows_service.ps1 -Mode agent
+```
+
+Notes:
+
+- `install_windows_service.ps1` auto-downloads `nssm.exe` if missing (disable with `-NoNssmDownload`).
+- `run_supervised.ps1` keeps restarting child process if it exits, and NSSM service recovery is also enabled.
+- If printer mapping is user-profile-scoped, Task Scheduler with `-RunAs current_user` may be a better fit than LocalSystem service mode.
+
 ## Common Problems
 
 - Jobs stuck `QUEUED`: no compatible online agent/printer for requested size/workstation.
@@ -219,6 +355,7 @@ Recommended practices:
 Detailed step-by-step deployment, verification, troubleshooting, and go-live checklist:
 
 - [docs/SETUP_AND_OPERATIONS_GUIDE.md](docs/SETUP_AND_OPERATIONS_GUIDE.md)
+- [docs/NEW_COMPUTER_SETUP.md](docs/NEW_COMPUTER_SETUP.md)
 
 ## Versioning and Branching
 

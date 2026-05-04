@@ -13,6 +13,7 @@ from .downloader import DownloadError, download_pdf
 from .printer import PrintError, print_raw
 from .renderer import render_pdf_to_tspl
 from .states import STATUS_DOWNLOADING, STATUS_FAILED, STATUS_PRINTING, STATUS_RENDERING, STATUS_SUCCESS
+from .version import APP_VERSION
 
 LOG = logging.getLogger("print_automation.agent")
 
@@ -61,7 +62,7 @@ class PrintAgent:
             "printers": printers_payload if printers_payload else [self.config.printer_name],
             "templates": self.config.templates,
             "host": self._hostname,
-            "version": "1.0.0",
+            "version": APP_VERSION,
         }
         try:
             self.client.heartbeat(payload)

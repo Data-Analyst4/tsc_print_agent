@@ -11,10 +11,12 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from print_automation.server import ServerSettings, run_server
+from print_automation.version import APP_VERSION
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run central print automation server.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {APP_VERSION}")
     parser.add_argument("--host", default="127.0.0.1", help="Bind host")
     parser.add_argument("--port", type=int, default=8089, help="Bind port")
     parser.add_argument("--db", default="./print_automation.db", help="SQLite DB path")

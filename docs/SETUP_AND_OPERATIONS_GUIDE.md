@@ -2,6 +2,8 @@
 
 This guide provides a simple, generic, and detailed method to deploy and run the PDF -> TSPL print automation system.
 
+Release covered by this document: `v1.1.0`.
+
 It is written for this operating model:
 
 - One central print server.
@@ -9,6 +11,12 @@ It is written for this operating model:
 - A web app (or script) submits jobs to the central server.
 - The central server routes jobs to the correct workstation/printer.
 - Workstation fallback is used if the primary workstation is unavailable.
+
+Related docs:
+
+- `docs/DOCUMENTATION_INDEX.md`
+- `docs/NEW_COMPUTER_SETUP.md`
+- `docs/WINDOWS_EXE_PACKAGING.md`
 
 ## 1) What You Will Have After Setup
 
@@ -79,6 +87,43 @@ If PowerShell execution policy blocks activation:
 ```powershell
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\.venv\Scripts\Activate.ps1
+```
+
+### Optional: One-Command Windows Setup
+
+For fresh Windows PCs, use:
+
+```powershell
+.\setup_windows.ps1 -Mode both -InstallDir "C:\Pdf2Tspl" -AuthToken "change-me-token"
+```
+
+What this setup file does:
+
+- Copies this project to install directory.
+- Installs Python 3.11 if missing.
+- Creates virtual environment and installs `requirements.txt`.
+- Prepares agent config for the machine.
+- Installs Windows services (server and/or agent) unless `-SkipServiceInstall` is used.
+
+Common variants:
+
+```powershell
+# Server-only
+.\setup_windows.ps1 -Mode server -InstallDir "C:\Pdf2Tspl" -AuthToken "change-me-token"
+
+# Agent-only (connect to remote server)
+.\setup_windows.ps1 `
+  -Mode agent `
+  -InstallDir "C:\Pdf2Tspl" `
+  -ServerUrl "http://192.168.1.20:8089" `
+  -AuthToken "change-me-token" `
+  -PrinterName "TSC_TE244"
+```
+
+If you prefer manual mode (no service install):
+
+```powershell
+.\setup_windows.ps1 -Mode both -InstallDir "C:\Pdf2Tspl" -SkipServiceInstall
 ```
 
 ## 6) Central Server Setup
@@ -372,6 +417,94 @@ Fix:
 - Run one long-lived server process on central host.
 - Run one or more agent processes per workstation depending on printer layout.
 - Keep logs centralized for troubleshooting.
+
+### 16.1 Windows Auto-Start Tasks (Boot + Restart + Crash Recovery)
+
+This project includes scripts to register startup tasks using Windows Task Scheduler.
+
+Behavior:
+
+- Starts automatically when PC boots.
+- Starts again on user logon.
+- If process exits/crashes, supervisor restarts it automatically.
+
+Run these in an elevated PowerShell window (Run as Administrator).
+
+Server machine:
+
+```powershell
+.\scripts\install_windows_autostart.ps1 `
+  -Mode server `
+  -Host 0.0.0.0 `
+  -Port 8089 `
+  -AuthToken "change-me-token" `
+  -RoutingMode server_managed `
+  -RunAs system
+```
+
+Workstation machine:
+
+```powershell
+.\scripts\install_windows_autostart.ps1 `
+  -Mode agent `
+  -AgentConfigPath ".\config\agent.local.json" `
+  -RunAs system
+```
+
+Optional:
+
+- If printer mapping exists only under logged-in user profile, use `-RunAs current_user`.
+
+Uninstall tasks:
+
+```powershell
+.\scripts\uninstall_windows_autostart.ps1 -Mode server
+.\scripts\uninstall_windows_autostart.ps1 -Mode agent
+```
+
+### 16.2 Windows Service Mode (NSSM, headless)
+
+If you want Rynan-style behavior (true Windows service, auto-start at boot, no user logon required), use these scripts.
+
+Run in elevated PowerShell:
+
+Server machine:
+
+```powershell
+.\scripts\install_windows_service.ps1 `
+  -Mode server `
+  -Host 0.0.0.0 `
+  -Port 8089 `
+  -AuthToken "change-me-token" `
+  -RoutingMode server_managed
+```
+
+Workstation machine:
+
+```powershell
+.\scripts\install_windows_service.ps1 `
+  -Mode agent `
+  -AgentConfigPath ".\config\agent.local.json"
+```
+
+Behavior:
+
+- Installs a Windows service via NSSM (`Pdf2Tspl-Server` or `Pdf2Tspl-Agent-<COMPUTERNAME>`).
+- Sets service start type to automatic.
+- Enables restart on crash/exit (NSSM + Windows service recovery rules).
+- Writes service stdout/stderr logs under `logs\`.
+
+Uninstall services:
+
+```powershell
+.\scripts\uninstall_windows_service.ps1 -Mode server
+.\scripts\uninstall_windows_service.ps1 -Mode agent
+```
+
+Notes:
+
+- If `nssm.exe` is not available, the installer downloads `nssm-2.24` automatically unless `-NoNssmDownload` is passed.
+- If your printer mapping is user-profile-only, Task Scheduler with `-RunAs current_user` can be more compatible than LocalSystem service mode.
 
 ## 17) Final Validation (Go-Live)
 
