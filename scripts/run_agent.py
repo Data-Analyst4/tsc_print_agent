@@ -12,10 +12,12 @@ if str(ROOT) not in sys.path:
 
 from print_automation.agent import PrintAgent
 from print_automation.config import load_agent_runtime_config
+from print_automation.version import APP_VERSION
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run local print agent.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {APP_VERSION}")
     parser.add_argument("--config", default="./config/agent.local.json", help="Agent config JSON path")
     parser.add_argument("--templates", default="./config/templates.json", help="Template config JSON path")
     parser.add_argument("--log-level", default="INFO", help="Logging level")
