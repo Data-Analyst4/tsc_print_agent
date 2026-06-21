@@ -10,7 +10,8 @@ param(
     [string]$PythonExe = "python",
     [string]$TemplatesPath = "",
     [string]$AgentConfigPath = "",
-    [string]$Host = "0.0.0.0",
+    [Alias("Host")]
+    [string]$ListenHost = "0.0.0.0",
     [int]$Port = 8089,
     [string]$DbPath = "",
     [string]$AuthToken = "change-me-token",
@@ -99,7 +100,7 @@ while ($true) {
         $scriptPath = Join-Path $RepoRoot "scripts\run_server.py"
         $args = @(
             $scriptPath,
-            "--host", $Host,
+            "--host", $ListenHost,
             "--port", "$Port",
             "--db", $DbPath,
             "--templates", $TemplatesPath,
@@ -136,4 +137,3 @@ while ($true) {
     Write-Log "Child process exited with code $exitCode. Restarting in $RestartDelaySeconds second(s)."
     Start-Sleep -Seconds ([Math]::Max(1, $RestartDelaySeconds))
 }
-

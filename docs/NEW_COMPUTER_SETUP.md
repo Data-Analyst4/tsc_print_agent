@@ -2,7 +2,7 @@
 
 Use this guide when setting up the project on a fresh Windows PC.
 
-Release covered by this document: `v1.1.1`.
+Release covered by this document: `v1.2.0`.
 
 See also:
 
@@ -13,10 +13,14 @@ See also:
 ## 1) Minimum Requirements
 
 - Windows 10/11
-- Python 3.11+
 - Network access between server PC and workstation PCs
 - Printer driver installed on each workstation (for real printing)
 - Shared auth token value for server and agents
+
+Notes:
+
+- Python 3.11 is auto-installed by `setup_windows.ps1` when missing.
+- Easiest option is running `INSTALL_ON_NEW_PC.bat` from project root.
 
 ## 2) Copy Project and Install Dependencies
 
@@ -32,6 +36,12 @@ Or use one-command installer setup:
 
 ```powershell
 .\setup_windows.ps1 -Mode both -InstallDir "C:\Pdf2Tspl" -AuthToken "change-me-token"
+```
+
+One-click option (double-click from project root):
+
+```cmd
+INSTALL_ON_NEW_PC.bat
 ```
 
 Agent-only machine example:
@@ -168,7 +178,41 @@ Workstation PC:
 
 If `nssm.exe` is not available, installer downloads it automatically (disable with `-NoNssmDownload`).
 
-## 7) Uninstall Auto-Start
+## 7) Enable Public HTTPS (Cloudflare Tunnel)
+
+For public access at `https://tspl.k95foods.com`:
+
+1. In Cloudflare Zero Trust, create a tunnel with public hostname `tspl.k95foods.com` -> `http://localhost:8089`.
+2. Copy token example and paste your token:
+
+```cmd
+copy config\cloudflared.token.example config\cloudflared.token
+notepad config\cloudflared.token
+```
+
+3. Install tunnel service (auto-start + auto-restart):
+
+```cmd
+install_cloudflare_tunnel.bat
+```
+
+Or pass token directly:
+
+```cmd
+install_cloudflare_tunnel.bat YOUR_TUNNEL_TOKEN
+```
+
+If you use `INSTALL_ON_NEW_PC.bat` or `install_print_services.bat`, tunnel installs automatically when `config\cloudflared.token` exists.
+
+Verify:
+
+```cmd
+print_services_status.bat
+```
+
+Expected public health: `https://tspl.k95foods.com/health` -> `{"ok":true}`
+
+## 8) Uninstall Auto-Start
 
 Task Scheduler tasks:
 
@@ -182,9 +226,16 @@ Windows services:
 ```powershell
 .\scripts\uninstall_windows_service.ps1 -Mode server
 .\scripts\uninstall_windows_service.ps1 -Mode agent
+.\scripts\uninstall_cloudflare_tunnel.ps1
 ```
 
-## 8) Quick Troubleshooting
+Or use:
+
+```cmd
+uninstall_print_services.bat
+```
+
+## 9) Quick Troubleshooting
 
 Server not reachable:
 

@@ -26,7 +26,10 @@ param(
     [int]$RollWidthMm = 100,
     [int]$RollHeightMm = 75,
     [string]$SizeCode = "4x3",
-    [switch]$OverwriteAgentConfig
+    [switch]$OverwriteAgentConfig,
+
+    [string]$TunnelToken = "",
+    [switch]$SkipTunnelInstall
 )
 
 Set-StrictMode -Version Latest
@@ -280,6 +283,49 @@ function Ensure-AgentConfig {
     Set-Content -LiteralPath $ConfigPath -Value $json -Encoding UTF8
 }
 
+function Install-Tunnel {
+    param(
+        [Parameter(Mandatory = $true)][string]$ProjectRoot,
+        [string]$Token = ""
+    )
+
+    if ($SkipTunnelInstall) {
+        Write-Host "Tunnel install skipped (-SkipTunnelInstall)."
+        return
+    }
+
+    $tunnelInstaller = Join-Path $ProjectRoot "scripts\install_cloudflare_tunnel.ps1"
+    if (-not (Test-Path -LiteralPath $tunnelInstaller -PathType Leaf)) {
+        Write-Host "Tunnel installer missing: $tunnelInstaller"
+        return
+    }
+
+    $tokenFile = Join-Path $ProjectRoot "config\cloudflared.token"
+    $configFile = Join-Path $ProjectRoot "config\cloudflared.yml"
+    $hasToken = -not [string]::IsNullOrWhiteSpace($Token) -or (Test-Path -LiteralPath $tokenFile -PathType Leaf)
+    $hasConfig = Test-Path -LiteralPath $configFile -PathType Leaf
+
+    if (-not $hasToken -and -not $hasConfig) {
+        Write-Host "No Cloudflare tunnel credentials found. Skipping tunnel service."
+        Write-Host "Add config\cloudflared.token or run install_cloudflare_tunnel.bat after setup."
+        return
+    }
+
+    $installerArgs = @{
+        RepoRoot = $ProjectRoot
+    }
+    if (-not [string]::IsNullOrWhiteSpace($Token)) {
+        $installerArgs.TunnelToken = $Token
+    }
+
+    try {
+        & $tunnelInstaller @installerArgs
+    } catch {
+        Write-Host "Cloudflare tunnel install failed: $($_.Exception.Message)"
+        Write-Host "Server/agent services are still installed. Run install_cloudflare_tunnel.bat after adding credentials."
+    }
+}
+
 function Install-Services {
     param(
         [Parameter(Mandatory = $true)][string]$ProjectRoot,
@@ -378,6 +424,12 @@ if (-not $SkipServiceInstall) {
     Invoke-Step -Label "Installing Windows services" -Action {
         Install-Services -ProjectRoot $InstallDir -VenvPythonPath $venvPython -EffectiveAgentConfigPath $effectiveAgentConfigPath
     }
+
+    if ($Mode -in @("server", "both")) {
+        Invoke-Step -Label "Installing Cloudflare tunnel service" -Action {
+            Install-Tunnel -ProjectRoot $InstallDir -Token $TunnelToken
+        }
+    }
 }
 
 $appVersion = Read-AppVersion -ProjectRoot $InstallDir
@@ -395,6 +447,7 @@ if ($Mode -in @("agent", "both")) {
 if ($Mode -in @("server", "both")) {
     Write-Host "Health URL: http://127.0.0.1:$ServerPort/health"
     Write-Host "Admin URL: http://127.0.0.1:$ServerPort/admin"
+    Write-Host "Public URL (with tunnel): https://tspl.k95foods.com"
 }
 if ($SkipServiceInstall) {
     Write-Host "Service install skipped. Start manually with:"

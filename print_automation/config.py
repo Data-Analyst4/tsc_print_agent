@@ -66,7 +66,9 @@ class AgentRuntimeConfig:
 
 
 def _load_json(path: str | Path) -> dict[str, Any]:
-    return json.loads(Path(path).read_text(encoding="utf-8"))
+    # Accept UTF-8 files with or without BOM so configs remain robust
+    # across editors and PowerShell JSON write commands.
+    return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
 def load_templates(path: str | Path) -> dict[str, TemplateProfile]:

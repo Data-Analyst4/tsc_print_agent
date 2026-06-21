@@ -97,6 +97,12 @@ For fresh Windows PCs, use:
 .\setup_windows.ps1 -Mode both -InstallDir "C:\Pdf2Tspl" -AuthToken "change-me-token"
 ```
 
+For a no-preinstall, one-click flow (recommended for new PCs), run:
+
+```cmd
+INSTALL_ON_NEW_PC.bat
+```
+
 What this setup file does:
 
 - Copies this project to install directory.

@@ -9,7 +9,8 @@ param(
     [string]$PythonExe = "",
     [string]$TemplatesPath = "",
     [string]$AgentConfigPath = "",
-    [string]$Host = "0.0.0.0",
+    [Alias("Host")]
+    [string]$ListenHost = "0.0.0.0",
     [int]$Port = 8089,
     [string]$DbPath = "",
     [string]$AuthToken = "change-me-token",
@@ -101,7 +102,7 @@ if (-not [string]::IsNullOrWhiteSpace($SupervisorLogPath)) {
 
 if ($Mode -eq "server") {
     $argTokens += @(
-        "-Host", $Host,
+        "-Host", $ListenHost,
         "-Port", "$Port",
         "-DbPath", (Quote-Arg $DbPath),
         "-AuthToken", (Quote-Arg $AuthToken),

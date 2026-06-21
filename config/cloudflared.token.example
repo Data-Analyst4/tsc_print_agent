@@ -1,0 +1,4 @@
+# Paste your Cloudflare tunnel token on the next line (one line only).
+# Copy this file to config/cloudflared.token and replace the placeholder.
+# Get the token from: Cloudflare Zero Trust -> Networks -> Tunnels -> your tunnel -> Install connector
+PASTE_YOUR_TUNNEL_TOKEN_HERE

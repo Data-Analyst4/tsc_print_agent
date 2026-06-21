@@ -385,6 +385,12 @@ class _ServerWithApp(ThreadingHTTPServer):
 class PrintAutomationHandler(BaseHTTPRequestHandler):
     server: _ServerWithApp
 
+    def do_OPTIONS(self) -> None:
+        self.send_response(int(HTTPStatus.NO_CONTENT))
+        self._write_cors_headers()
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
     def do_GET(self) -> None:
         parsed = urlsplit(self.path)
         path = parsed.path
@@ -689,10 +695,17 @@ class PrintAutomationHandler(BaseHTTPRequestHandler):
     def _write_json(self, status: HTTPStatus, payload: dict[str, Any]) -> None:
         raw = json.dumps(payload, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
         self.send_response(int(status))
+        self._write_cors_headers()
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+    def _write_cors_headers(self) -> None:
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "X-Auth-Token,Content-Type,Authorization")
+        self.send_header("Access-Control-Max-Age", "600")
 
     @staticmethod
     def _coerce_bool(value: Any, *, default: bool) -> bool:
@@ -719,6 +732,7 @@ class PrintAutomationHandler(BaseHTTPRequestHandler):
     def _write_html(self, status: HTTPStatus, html: str) -> None:
         raw = html.encode("utf-8")
         self.send_response(int(status))
+        self._write_cors_headers()
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
@@ -772,6 +786,7 @@ class PrintAutomationHandler(BaseHTTPRequestHandler):
     def _write_file(self, *, status: HTTPStatus, content_type: str, content_disposition: str, path: Path) -> None:
         data = path.read_bytes()
         self.send_response(int(status))
+        self._write_cors_headers()
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Content-Disposition", content_disposition)

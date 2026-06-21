@@ -189,6 +189,12 @@ Optional launcher:
 setup_windows.bat -Mode both -InstallDir C:\Pdf2Tspl -AuthToken change-me-token
 ```
 
+One-click fresh-PC installer (auto-elevates and runs full setup defaults):
+
+```cmd
+INSTALL_ON_NEW_PC.bat
+```
+
 ### Build EXE / Installer
 
 Build portable app EXEs:
@@ -336,6 +342,26 @@ Remove services:
 .\scripts\uninstall_windows_service.ps1 -Mode server
 .\scripts\uninstall_windows_service.ps1 -Mode agent
 ```
+
+Middleware-style wrappers (auto-elevate) are also available:
+
+```cmd
+INSTALL_ON_NEW_PC.bat
+install_print_services.bat [AUTH_TOKEN] [TUNNEL_TOKEN]
+install_cloudflare_tunnel.bat [TUNNEL_TOKEN]
+print_services_status.bat
+uninstall_print_services.bat
+```
+
+### Cloudflare Tunnel (Public HTTPS)
+
+Public URL target: `https://tspl.k95foods.com`
+
+1. Create tunnel in Cloudflare Zero Trust with hostname `tspl.k95foods.com` -> `http://localhost:8089`.
+2. Save token to `config\cloudflared.token` (see `config\cloudflared.token.example`).
+3. Run `install_cloudflare_tunnel.bat` or include token file before `INSTALL_ON_NEW_PC.bat`.
+
+Tunnel runs as `Pdf2Tspl-Tunnel` Windows service with the same auto-start and crash-restart behavior as server/agent.
 
 Notes:
 
