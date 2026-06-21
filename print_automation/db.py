@@ -97,15 +97,10 @@ class PrintDB:
                     updated_at TEXT NOT NULL,
                     PRIMARY KEY(agent_id, printer_name)
                 );
-
-                CREATE INDEX IF NOT EXISTS idx_jobs_status_created_at ON jobs(status, created_at);
-                CREATE INDEX IF NOT EXISTS idx_events_job_id ON job_events(job_id);
-                CREATE INDEX IF NOT EXISTS idx_printer_profiles_agent_id ON agent_printer_profiles(agent_id);
-                CREATE INDEX IF NOT EXISTS idx_agents_workstation_id ON agents(workstation_id);
-                CREATE INDEX IF NOT EXISTS idx_fallbacks_ws_rank ON workstation_fallbacks(workstation_id, rank);
                 """
             )
             self._ensure_schema_evolution()
+            self._create_indexes()
             self._conn.commit()
 
     def _ensure_schema_evolution(self) -> None:
@@ -118,6 +113,21 @@ class PrintDB:
         if column in columns:
             return
         self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {spec}")
+
+    def _create_indexes(self) -> None:
+        self._create_index_if_columns_exist("idx_jobs_status_created_at", "jobs", ["status", "created_at"])
+        self._create_index_if_columns_exist("idx_events_job_id", "job_events", ["job_id"])
+        self._create_index_if_columns_exist("idx_printer_profiles_agent_id", "agent_printer_profiles", ["agent_id"])
+        self._create_index_if_columns_exist("idx_agents_workstation_id", "agents", ["workstation_id"])
+        self._create_index_if_columns_exist("idx_fallbacks_ws_rank", "workstation_fallbacks", ["workstation_id", "rank"])
+
+    def _create_index_if_columns_exist(self, index: str, table: str, columns: list[str]) -> None:
+        rows = self._conn.execute(f"PRAGMA table_info({table})").fetchall()
+        available = {row["name"] for row in rows}
+        if not all(col in available for col in columns):
+            return
+        cols = ",".join(columns)
+        self._conn.execute(f"CREATE INDEX IF NOT EXISTS {index} ON {table}({cols})")
 
     def close(self) -> None:
         with self._lock:

@@ -21,5 +21,18 @@ print_automation.db-wal
 agent_work/
 agent_work_file/
 
+# Cloudflare tunnel secrets (never commit)
+config/cloudflared.token
+config/cloudflared-credentials.json
+
+# Downloaded Windows binaries (auto-fetched by install scripts)
+scripts/nssm.exe
+scripts/cloudflared.exe
+
 # Generated TSPL outputs
 *.tspl
+
+# Build outputs
+artifacts/
+build/
+dist/

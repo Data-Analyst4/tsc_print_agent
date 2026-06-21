@@ -44,14 +44,16 @@ ADMIN_PRINTER_UI_HTML = """<!doctype html>
     }
     .field { display: grid; gap: 3px; }
     .field label { font-size: 12px; color: var(--muted); }
-    input {
+    input,
+    select {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 8px;
       padding: 8px 9px;
       outline: none;
     }
-    input:focus { border-color: var(--accent); }
+    input:focus,
+    select:focus { border-color: var(--accent); }
     .row-actions {
       display: flex;
       flex-wrap: wrap;
@@ -67,6 +69,7 @@ ADMIN_PRINTER_UI_HTML = """<!doctype html>
       color: #fff;
       cursor: pointer;
     }
+    button.small { padding: 5px 8px; font-size: 12px; }
     button.secondary { background: #4f6276; }
     button.danger { background: var(--danger); }
     table {
@@ -83,6 +86,17 @@ ADMIN_PRINTER_UI_HTML = """<!doctype html>
     }
     th { color: var(--muted); font-weight: 600; }
     .mono { font-family: Consolas, "Courier New", monospace; }
+    pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #f8fbff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      max-height: 240px;
+      overflow: auto;
+      margin-top: 8px;
+    }
     .status { color: var(--muted); margin-top: 4px; font-size: 13px; min-height: 18px; }
     @media (max-width: 920px) {
       .grid { grid-template-columns: 1fr 1fr; }
@@ -207,6 +221,45 @@ ADMIN_PRINTER_UI_HTML = """<!doctype html>
     </div>
 
     <div class="card">
+      <h2>Recent Jobs and Artifacts</h2>
+      <div class="grid">
+        <div class="field" style="grid-column: span 2;">
+          <label>Status Filter</label>
+          <select id="jobs_status">
+            <option value="">All statuses</option>
+            <option value="QUEUED">QUEUED</option>
+            <option value="ASSIGNED">ASSIGNED</option>
+            <option value="DOWNLOADING">DOWNLOADING</option>
+            <option value="RENDERING">RENDERING</option>
+            <option value="PRINTING">PRINTING</option>
+            <option value="SUCCESS">SUCCESS</option>
+            <option value="FAILED">FAILED</option>
+          </select>
+        </div>
+        <div class="field" style="grid-column: span 1;">
+          <label>Limit (1-500)</label>
+          <input id="jobs_limit" type="number" min="1" max="500" value="100">
+        </div>
+      </div>
+      <div class="row-actions">
+        <button id="refresh_jobs" class="secondary">Refresh Jobs</button>
+        <button id="toggle_live" class="secondary">Live Refresh: OFF</button>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>Job ID</th><th>Status</th><th>Agent</th><th>Printer</th><th>Copies</th><th>Size</th><th>Created</th><th>Error</th><th>Artifacts</th><th>Events</th>
+          </tr>
+        </thead>
+        <tbody id="jobs_rows"></tbody>
+      </table>
+      <div class="field" style="margin-top:8px;">
+        <label>Selected Job Events</label>
+        <pre id="job_events" class="mono">Select a job and click "View Events".</pre>
+      </div>
+    </div>
+
+    <div class="card">
       <h2>Active Printers (from discovery)</h2>
       <table>
         <thead>
@@ -226,6 +279,11 @@ ADMIN_PRINTER_UI_HTML = """<!doctype html>
     const wsRows = document.getElementById("ws_rows");
     const fallbackRows = document.getElementById("fallback_rows");
     const activeRows = document.getElementById("active_rows");
+    const jobsRows = document.getElementById("jobs_rows");
+    const jobEventsNode = document.getElementById("job_events");
+    const liveToggleButton = document.getElementById("toggle_live");
+    let liveRefreshTimer = null;
+    let liveRefreshEnabled = false;
 
     function token() { return document.getElementById("token").value.trim(); }
     function boolOrDefault(value, fallback=true) {
@@ -238,6 +296,14 @@ ADMIN_PRINTER_UI_HTML = """<!doctype html>
     function say(text, isErr=false) {
       statusNode.textContent = text;
       statusNode.style.color = isErr ? "#b82c2c" : "#617183";
+    }
+    function safe(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#39;");
     }
     async function api(path, method="GET", body=null) {
       const t = token();
@@ -256,12 +322,151 @@ ADMIN_PRINTER_UI_HTML = """<!doctype html>
       return tr;
     }
 
+    function jobsQueryString() {
+      const status = document.getElementById("jobs_status").value.trim();
+      const rawLimit = document.getElementById("jobs_limit").value.trim();
+      let limit = Number(rawLimit || "100");
+      if (!Number.isFinite(limit)) limit = 100;
+      limit = Math.min(500, Math.max(1, Math.trunc(limit)));
+      document.getElementById("jobs_limit").value = String(limit);
+
+      const params = new URLSearchParams();
+      params.set("limit", String(limit));
+      if (status) params.set("status", status);
+      return params.toString();
+    }
+
+    function extractJobSizeCode(job) {
+      const metadata = job.metadata || {};
+      const profile = job.profile || {};
+      return metadata.requested_size_code || metadata.requested_label_size || profile.size_code || "-";
+    }
+
+    async function fetchArtifact(jobId, kind, openInNewTab=false) {
+      const t = token();
+      if (!t) throw new Error("API token required");
+      const headers = {"X-Auth-Token": t};
+      const url = "/v1/jobs/" + encodeURIComponent(jobId) + "/artifacts/" + kind;
+      const res = await fetch(url, {method: "GET", headers});
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || ("HTTP " + res.status));
+      }
+
+      const blob = await res.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      if (kind === "pdf" && openInNewTab) {
+        window.open(blobUrl, "_blank", "noopener,noreferrer");
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+        return;
+      }
+
+      const suffix = kind === "pdf" ? "pdf" : "tspl";
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.download = jobId + "." + suffix;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(blobUrl), 15000);
+    }
+
+    function renderJobs(jobs) {
+      jobsRows.innerHTML = "";
+      for (const j of (jobs || [])) {
+        const hasPdf = Boolean(j.output_pdf_path);
+        const hasTspl = Boolean(j.output_tspl_path);
+        const actions = [
+          hasPdf ? "<button class='small secondary' data-act='view-pdf'>View PDF</button>" : "<span>-</span>",
+          hasTspl ? "<button class='small secondary' data-act='download-tspl'>Download TSPL</button>" : "<span>-</span>",
+        ].join(" ");
+        const tr = row(
+          "<td class='mono'>" + safe(j.job_id) + "</td>" +
+          "<td>" + safe(j.status || "") + "</td>" +
+          "<td class='mono'>" + safe(j.assigned_agent_id || j.target_agent_id || "-") + "</td>" +
+          "<td class='mono'>" + safe(j.target_printer || "-") + "</td>" +
+          "<td>" + safe(j.copies || "") + "</td>" +
+          "<td>" + safe(extractJobSizeCode(j)) + "</td>" +
+          "<td>" + safe(j.created_at || "") + "</td>" +
+          "<td>" + safe(j.error_message || "-") + "</td>" +
+          "<td>" + actions + "</td>" +
+          "<td><button class='small secondary' data-act='events'>View Events</button></td>"
+        );
+
+        const pdfBtn = tr.querySelector("[data-act='view-pdf']");
+        if (pdfBtn) {
+          pdfBtn.addEventListener("click", async () => {
+            try {
+              await fetchArtifact(j.job_id, "pdf", true);
+              say("Opened PDF artifact for " + j.job_id);
+            } catch (err) {
+              say(err.message || String(err), true);
+            }
+          });
+        }
+
+        const tsplBtn = tr.querySelector("[data-act='download-tspl']");
+        if (tsplBtn) {
+          tsplBtn.addEventListener("click", async () => {
+            try {
+              await fetchArtifact(j.job_id, "tspl", false);
+              say("Downloaded TSPL artifact for " + j.job_id);
+            } catch (err) {
+              say(err.message || String(err), true);
+            }
+          });
+        }
+
+        const eventsBtn = tr.querySelector("[data-act='events']");
+        if (eventsBtn) {
+          eventsBtn.addEventListener("click", async () => {
+            try {
+              const out = await api("/v1/jobs/" + encodeURIComponent(j.job_id) + "?include_events=true");
+              const events = out.events || [];
+              jobEventsNode.textContent = JSON.stringify(events, null, 2);
+              say("Loaded " + events.length + " events for " + j.job_id);
+            } catch (err) {
+              say(err.message || String(err), true);
+            }
+          });
+        }
+
+        jobsRows.appendChild(tr);
+      }
+    }
+
+    async function refreshJobs(showStatus=true) {
+      const jobsResponse = await api("/v1/jobs?" + jobsQueryString());
+      const jobs = jobsResponse.jobs || [];
+      renderJobs(jobs);
+      if (showStatus) say("Loaded " + jobs.length + " jobs");
+    }
+
+    function setLiveRefresh(enabled) {
+      liveRefreshEnabled = enabled;
+      if (liveRefreshTimer !== null) {
+        clearInterval(liveRefreshTimer);
+        liveRefreshTimer = null;
+      }
+      if (enabled) {
+        liveRefreshTimer = setInterval(async () => {
+          try {
+            await refreshAll();
+          } catch (err) {
+            say(err.message || String(err), true);
+          }
+        }, 10000);
+      }
+      liveToggleButton.textContent = enabled ? "Live Refresh: ON (10s)" : "Live Refresh: OFF";
+    }
+
     async function refreshAll() {
-      const [profiles, workstations, fallbacks, discovery] = await Promise.all([
+      const [profiles, workstations, fallbacks, discovery, jobsResponse] = await Promise.all([
         api("/v1/admin/printer-profiles"),
         api("/v1/admin/workstations"),
         api("/v1/admin/workstation-fallbacks"),
         api("/v1/discovery"),
+        api("/v1/jobs?" + jobsQueryString()),
       ]);
 
       printerRows.innerHTML = "";
@@ -332,7 +537,8 @@ ADMIN_PRINTER_UI_HTML = """<!doctype html>
           )
         );
       }
-      say("Loaded discovery data");
+      renderJobs(jobsResponse.jobs || []);
+      say("Loaded discovery data and jobs");
     }
 
     document.getElementById("save_printer").addEventListener("click", async () => {
@@ -385,6 +591,23 @@ ADMIN_PRINTER_UI_HTML = """<!doctype html>
 
     document.getElementById("refresh_all").addEventListener("click", async () => {
       try { await refreshAll(); } catch (err) { say(err.message || String(err), true); }
+    });
+
+    document.getElementById("refresh_jobs").addEventListener("click", async () => {
+      try { await refreshJobs(); } catch (err) { say(err.message || String(err), true); }
+    });
+
+    document.getElementById("jobs_status").addEventListener("change", async () => {
+      try { await refreshJobs(false); } catch (err) { say(err.message || String(err), true); }
+    });
+
+    document.getElementById("jobs_limit").addEventListener("change", async () => {
+      try { await refreshJobs(false); } catch (err) { say(err.message || String(err), true); }
+    });
+
+    liveToggleButton.addEventListener("click", () => {
+      setLiveRefresh(!liveRefreshEnabled);
+      say(liveRefreshEnabled ? "Live refresh enabled" : "Live refresh disabled");
     });
   </script>
 </body>

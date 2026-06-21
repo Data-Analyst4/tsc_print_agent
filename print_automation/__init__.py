@@ -9,6 +9,7 @@ from .states import (
     STATUS_RENDERING,
     STATUS_SUCCESS,
 )
+from .version import APP_VERSION as __version__
 
 __all__ = [
     "STATUS_ASSIGNED",
@@ -18,5 +19,5 @@ __all__ = [
     "STATUS_QUEUED",
     "STATUS_RENDERING",
     "STATUS_SUCCESS",
+    "__version__",
 ]
-

@@ -1,0 +1,12 @@
+# Copy to config/cloudflared.yml and set credentials-file path.
+# Create the tunnel in Cloudflare Zero Trust dashboard first.
+#
+# Public hostname example: tspl.k95foods.com -> http://127.0.0.1:8089
+
+tunnel: REPLACE_WITH_TUNNEL_ID
+credentials-file: C:\Pdf2Tspl\config\cloudflared-credentials.json
+
+ingress:
+  - hostname: tspl.k95foods.com
+    service: http://127.0.0.1:8089
+  - service: http_status:404
